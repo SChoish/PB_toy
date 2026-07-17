@@ -1,0 +1,150 @@
+=== 50k train mem_fraction=0.25 ===
+
+######## bc ########
+Loaded 95685 transitions from hazard_env/datasets/hazard2d-navigate.npz
+[bc] step=1 {'actor_loss': 2.2421858310699463, 'mse': 0.40430885553359985}
+[bc] step=2000 {'actor_loss': 2.1524057388305664, 'mse': 0.3145286440849304}
+[bc] step=4000 {'actor_loss': 2.1375083923339844, 'mse': 0.29963159561157227}
+[bc] step=6000 {'actor_loss': 2.1151580810546875, 'mse': 0.27728089690208435}
+[bc] step=8000 {'actor_loss': 2.099699020385742, 'mse': 0.2618218958377838}
+[bc] step=10000 {'actor_loss': 2.0958385467529297, 'mse': 0.2579617202281952}
+[bc] eval@10000 {'task1_success': 0.0, 'task1_death': 0.0, 'task2_success': 0.0, 'task2_death': 0.0, 'task3_success': 0.0, 'task3_death': 0.0, 'task4_success': 0.0, 'task4_death': 0.0, 'task5_success': 0.0, 'task5_death': 0.0, 'mean_success': 0.0}
+[bc] step=12000 {'actor_loss': 2.072695255279541, 'mse': 0.23481829464435577}
+[bc] step=14000 {'actor_loss': 2.082740306854248, 'mse': 0.24486330151557922}
+[bc] step=16000 {'actor_loss': 2.060866594314575, 'mse': 0.22298963367938995}
+[bc] step=18000 {'actor_loss': 2.062342643737793, 'mse': 0.2244654893875122}
+[bc] step=20000 {'actor_loss': 2.0352892875671387, 'mse': 0.1974121779203415}
+[bc] eval@20000 {'task1_success': 0.0, 'task1_death': 0.0, 'task2_success': 0.0, 'task2_death': 0.0, 'task3_success': 0.0, 'task3_death': 0.0, 'task4_success': 0.0, 'task4_death': 0.0, 'task5_success': 0.0, 'task5_death': 0.0, 'mean_success': 0.0}
+[bc] step=22000 {'actor_loss': 2.0272107124328613, 'mse': 0.18933361768722534}
+[bc] step=24000 {'actor_loss': 2.0330021381378174, 'mse': 0.19512513279914856}
+[bc] step=26000 {'actor_loss': 2.0385193824768066, 'mse': 0.2006421536207199}
+[bc] step=28000 {'actor_loss': 2.0146641731262207, 'mse': 0.17678716778755188}
+[bc] step=30000 {'actor_loss': 2.035048007965088, 'mse': 0.19717098772525787}
+[bc] eval@30000 {'task1_success': 0.0, 'task1_death': 0.0, 'task2_success': 0.0, 'task2_death': 0.0, 'task3_success': 0.0, 'task3_death': 0.0, 'task4_success': 0.0, 'task4_death': 0.0, 'task5_success': 0.0, 'task5_death': 0.0, 'mean_success': 0.0}
+[bc] step=32000 {'actor_loss': 2.0381903648376465, 'mse': 0.20031329989433289}
+[bc] step=34000 {'actor_loss': 2.0088047981262207, 'mse': 0.17092770338058472}
+[bc] step=36000 {'actor_loss': 2.001995801925659, 'mse': 0.16411882638931274}
+[bc] step=38000 {'actor_loss': 2.006814956665039, 'mse': 0.16893792152404785}
+[bc] step=40000 {'actor_loss': 2.0371084213256836, 'mse': 0.19923140108585358}
+[bc] eval@40000 {'task1_success': 0.0, 'task1_death': 0.0, 'task2_success': 0.0, 'task2_death': 0.0, 'task3_success': 0.0, 'task3_death': 0.0, 'task4_success': 0.0, 'task4_death': 0.0, 'task5_success': 0.0, 'task5_death': 0.0, 'mean_success': 0.0}
+[bc] step=42000 {'actor_loss': 1.999924659729004, 'mse': 0.16204766929149628}
+[bc] step=44000 {'actor_loss': 2.0176122188568115, 'mse': 0.17973509430885315}
+[bc] step=46000 {'actor_loss': 2.0014986991882324, 'mse': 0.163621723651886}
+[bc] step=48000 {'actor_loss': 2.000176191329956, 'mse': 0.1622990369796753}
+[bc] step=50000 {'actor_loss': 1.9989317655563354, 'mse': 0.1610548198223114}
+[bc] eval@50000 {'task1_success': 0.0, 'task1_death': 0.0, 'task2_success': 0.0, 'task2_death': 0.0, 'task3_success': 0.0, 'task3_death': 0.0, 'task4_success': 0.0, 'task4_death': 0.0, 'task5_success': 0.0, 'task5_death': 0.0, 'mean_success': 0.0}
+[bc] final eval {'task1_success': 0.0, 'task1_death': 0.0, 'task2_success': 0.0, 'task2_death': 0.0, 'task3_success': 0.0, 'task3_death': 0.0, 'task4_success': 0.0, 'task4_death': 0.0, 'task5_success': 0.0, 'task5_death': 0.0, 'mean_success': 0.0}  (100.6s)
+######## bc done in 104.9s ########
+
+
+######## hiql ########
+Loaded 95685 transitions from hazard_env/datasets/hazard2d-navigate.npz
+[hiql] step=1 {'high_actor/actor_loss': 7.605307579040527, 'high_actor/mse': 0.16455988585948944, 'low_actor/actor_loss': 2.299901008605957, 'value/v_mean': -0.018873797729611397, 'value/value_loss': 1.1171109676361084}
+[hiql] step=2000 {'high_actor/actor_loss': 4.752147674560547, 'high_actor/mse': 0.005608635023236275, 'low_actor/actor_loss': 2.2295713424682617, 'value/v_mean': 0.9291697144508362, 'value/value_loss': 0.0006065471097826958}
+[hiql] step=4000 {'high_actor/actor_loss': 4.624015808105469, 'high_actor/mse': 0.005820535589009523, 'low_actor/actor_loss': 2.195800304412842, 'value/v_mean': 0.9083889722824097, 'value/value_loss': 0.0007413004641421139}
+[hiql] step=6000 {'high_actor/actor_loss': 4.614788055419922, 'high_actor/mse': 0.006070641800761223, 'low_actor/actor_loss': 2.1733286380767822, 'value/v_mean': 0.9554793834686279, 'value/value_loss': 0.000584336114116013}
+[hiql] step=8000 {'high_actor/actor_loss': 4.4980010986328125, 'high_actor/mse': 0.004936346784234047, 'low_actor/actor_loss': 2.157358169555664, 'value/v_mean': 0.9348659515380859, 'value/value_loss': 0.00026057305512949824}
+[hiql] step=10000 {'high_actor/actor_loss': 4.271412372589111, 'high_actor/mse': 0.002971986308693886, 'low_actor/actor_loss': 2.1365480422973633, 'value/v_mean': 0.9038649201393127, 'value/value_loss': 0.00023968178720679134}
+[hiql] eval@10000 {'task1_success': 0.0, 'task1_death': 0.0, 'task2_success': 0.0, 'task2_death': 0.0, 'task3_success': 0.0, 'task3_death': 0.0, 'task4_success': 0.0, 'task4_death': 0.0, 'task5_success': 0.0, 'task5_death': 0.0, 'mean_success': 0.0}
+[hiql] step=12000 {'high_actor/actor_loss': 4.336411952972412, 'high_actor/mse': 0.0023682168684899807, 'low_actor/actor_loss': 2.1207425594329834, 'value/v_mean': 0.878957211971283, 'value/value_loss': 0.00021675493917427957}
+[hiql] step=14000 {'high_actor/actor_loss': 4.307674407958984, 'high_actor/mse': 0.004780937917530537, 'low_actor/actor_loss': 2.1172099113464355, 'value/v_mean': 0.9136812090873718, 'value/value_loss': 0.00011882236140081659}
+[hiql] step=16000 {'high_actor/actor_loss': 4.414261817932129, 'high_actor/mse': 0.0024690525606274605, 'low_actor/actor_loss': 2.1051645278930664, 'value/v_mean': 0.8920164108276367, 'value/value_loss': 8.606545452494174e-05}
+[hiql] step=18000 {'high_actor/actor_loss': 4.4047746658325195, 'high_actor/mse': 0.0037717833183705807, 'low_actor/actor_loss': 2.111969232559204, 'value/v_mean': 0.9044917821884155, 'value/value_loss': 5.408406286733225e-05}
+[hiql] step=20000 {'high_actor/actor_loss': 4.352028846740723, 'high_actor/mse': 0.0026598426047712564, 'low_actor/actor_loss': 2.0885143280029297, 'value/v_mean': 0.9186547994613647, 'value/value_loss': 7.063393422868103e-05}
+[hiql] eval@20000 {'task1_success': 0.0, 'task1_death': 0.0, 'task2_success': 0.0, 'task2_death': 0.0, 'task3_success': 0.0, 'task3_death': 0.0, 'task4_success': 0.0, 'task4_death': 0.0, 'task5_success': 0.0, 'task5_death': 0.0, 'mean_success': 0.0}
+[hiql] step=22000 {'high_actor/actor_loss': 4.2695817947387695, 'high_actor/mse': 0.004918893799185753, 'low_actor/actor_loss': 2.0754408836364746, 'value/v_mean': 0.9102869033813477, 'value/value_loss': 6.414750532712787e-05}
+[hiql] step=24000 {'high_actor/actor_loss': 4.400017261505127, 'high_actor/mse': 0.0025590541772544384, 'low_actor/actor_loss': 2.0835227966308594, 'value/v_mean': 0.905051052570343, 'value/value_loss': 0.00015425760648213327}
+[hiql] step=26000 {'high_actor/actor_loss': 4.31310510635376, 'high_actor/mse': 0.0026302416808903217, 'low_actor/actor_loss': 2.0826430320739746, 'value/v_mean': 0.9214186668395996, 'value/value_loss': 5.6907389080151916e-05}
+[hiql] step=28000 {'high_actor/actor_loss': 4.406383037567139, 'high_actor/mse': 0.0030448739416897297, 'low_actor/actor_loss': 2.070631504058838, 'value/v_mean': 0.9095386266708374, 'value/value_loss': 3.9675578591413796e-05}
+[hiql] step=30000 {'high_actor/actor_loss': 4.369843482971191, 'high_actor/mse': 0.0028652260079979897, 'low_actor/actor_loss': 2.0785932540893555, 'value/v_mean': 0.9183957576751709, 'value/value_loss': 4.7681456635473296e-05}
+[hiql] eval@30000 {'task1_success': 0.0, 'task1_death': 0.0, 'task2_success': 0.0, 'task2_death': 0.0, 'task3_success': 0.0, 'task3_death': 0.0, 'task4_success': 0.0, 'task4_death': 0.0, 'task5_success': 0.0, 'task5_death': 0.0, 'mean_success': 0.0}
+[hiql] step=32000 {'high_actor/actor_loss': 4.344473838806152, 'high_actor/mse': 0.002585739828646183, 'low_actor/actor_loss': 2.079407215118408, 'value/v_mean': 0.9116309285163879, 'value/value_loss': 4.602981061907485e-05}
+[hiql] step=34000 {'high_actor/actor_loss': 4.249253273010254, 'high_actor/mse': 0.003327600657939911, 'low_actor/actor_loss': 2.0581138134002686, 'value/v_mean': 0.9123649001121521, 'value/value_loss': 7.523352542193606e-05}
+[hiql] step=36000 {'high_actor/actor_loss': 4.300950050354004, 'high_actor/mse': 0.004177945666015148, 'low_actor/actor_loss': 2.0446014404296875, 'value/v_mean': 0.9029768705368042, 'value/value_loss': 7.276066025951877e-05}
+[hiql] step=38000 {'high_actor/actor_loss': 4.285400390625, 'high_actor/mse': 0.0025678742676973343, 'low_actor/actor_loss': 2.0541558265686035, 'value/v_mean': 0.9182908535003662, 'value/value_loss': 4.373918636702001e-05}
+[hiql] step=40000 {'high_actor/actor_loss': 4.3237762451171875, 'high_actor/mse': 0.003331548999994993, 'low_actor/actor_loss': 2.0816450119018555, 'value/v_mean': 0.9092352986335754, 'value/value_loss': 5.430266173789278e-05}
+[hiql] eval@40000 {'task1_success': 0.0, 'task1_death': 0.0, 'task2_success': 0.0, 'task2_death': 0.0, 'task3_success': 0.0, 'task3_death': 0.0, 'task4_success': 0.0, 'task4_death': 0.0, 'task5_success': 0.0, 'task5_death': 0.0, 'mean_success': 0.0}
+[hiql] step=42000 {'high_actor/actor_loss': 4.272487640380859, 'high_actor/mse': 0.0016468948451802135, 'low_actor/actor_loss': 2.0460715293884277, 'value/v_mean': 0.9292725324630737, 'value/value_loss': 6.112422852311283e-05}
+[hiql] step=44000 {'high_actor/actor_loss': 4.339442253112793, 'high_actor/mse': 0.003386791329830885, 'low_actor/actor_loss': 2.066500663757324, 'value/v_mean': 0.9048951268196106, 'value/value_loss': 4.2834028135985136e-05}
+[hiql] step=46000 {'high_actor/actor_loss': 4.370978355407715, 'high_actor/mse': 0.0019273976795375347, 'low_actor/actor_loss': 2.0457863807678223, 'value/v_mean': 0.9067570567131042, 'value/value_loss': 4.78870642837137e-05}
+[hiql] step=48000 {'high_actor/actor_loss': 4.427116394042969, 'high_actor/mse': 0.002651606686413288, 'low_actor/actor_loss': 2.040081024169922, 'value/v_mean': 0.9079396724700928, 'value/value_loss': 4.838853783439845e-05}
+[hiql] step=50000 {'high_actor/actor_loss': 4.443937301635742, 'high_actor/mse': 0.002384232124313712, 'low_actor/actor_loss': 2.047072410583496, 'value/v_mean': 0.9049437642097473, 'value/value_loss': 3.5791857953881845e-05}
+[hiql] eval@50000 {'task1_success': 0.0, 'task1_death': 0.0, 'task2_success': 0.0, 'task2_death': 0.0, 'task3_success': 0.0, 'task3_death': 0.0, 'task4_success': 0.0, 'task4_death': 0.0, 'task5_success': 0.0, 'task5_death': 0.0, 'mean_success': 0.0}
+[hiql] final eval {'task1_success': 0.0, 'task1_death': 0.0, 'task2_success': 0.0, 'task2_death': 0.0, 'task3_success': 0.0, 'task3_death': 0.0, 'task4_success': 0.0, 'task4_death': 0.0, 'task5_success': 0.0, 'task5_death': 0.0, 'mean_success': 0.0}  (126.8s)
+######## hiql done in 131.3s ########
+
+
+######## pbg ########
+Loaded 95685 transitions from hazard_env/datasets/hazard2d-navigate.npz
+[pbg] step=1 {'first_step_mse': 0.03238976374268532, 'idm_mse': 2.394731044769287, 'loss': 5.317913055419922, 'path_mse': 0.09412041306495667, 'subgoal_mse': 2.7966716289520264}
+[pbg] step=2000 {'first_step_mse': 0.0009368088794872165, 'idm_mse': 0.07490880787372589, 'loss': 0.08210192620754242, 'path_mse': 0.001208233879879117, 'subgoal_mse': 0.005048073828220367}
+[pbg] step=4000 {'first_step_mse': 0.0009290168527513742, 'idm_mse': 0.04689348489046097, 'loss': 0.05316450819373131, 'path_mse': 0.001446520327590406, 'subgoal_mse': 0.0038954850751906633}
+[pbg] step=6000 {'first_step_mse': 0.0008467263542115688, 'idm_mse': 0.039141491055488586, 'loss': 0.04419136047363281, 'path_mse': 0.0009889266220852733, 'subgoal_mse': 0.003214217722415924}
+[pbg] step=8000 {'first_step_mse': 0.000685450155287981, 'idm_mse': 0.03035558946430683, 'loss': 0.03530864417552948, 'path_mse': 0.0008627839852124453, 'subgoal_mse': 0.0034048184752464294}
+[pbg] step=10000 {'first_step_mse': 0.000882517546415329, 'idm_mse': 0.026959728449583054, 'loss': 0.03142455965280533, 'path_mse': 0.001221247250214219, 'subgoal_mse': 0.0023610657081007957}
+[pbg] eval@10000 {'task1_success': 1.0, 'task1_death': 0.0, 'task2_success': 1.0, 'task2_death': 0.0, 'task3_success': 1.0, 'task3_death': 0.0, 'task4_success': 1.0, 'task4_death': 0.0, 'task5_success': 0.0, 'task5_death': 1.0, 'mean_success': 0.8}
+[pbg] step=12000 {'first_step_mse': 0.0006349882460199296, 'idm_mse': 0.028064386919140816, 'loss': 0.031349144876003265, 'path_mse': 0.0008836694760248065, 'subgoal_mse': 0.001766099827364087}
+[pbg] step=14000 {'first_step_mse': 0.0006909661460667849, 'idm_mse': 0.03106459230184555, 'loss': 0.036155156791210175, 'path_mse': 0.0009351816261187196, 'subgoal_mse': 0.0034644179977476597}
+[pbg] step=16000 {'first_step_mse': 0.0007357025751844049, 'idm_mse': 0.02442135661840439, 'loss': 0.028394324705004692, 'path_mse': 0.0009209583513438702, 'subgoal_mse': 0.002316307509317994}
+[pbg] step=18000 {'first_step_mse': 0.0006403200095519423, 'idm_mse': 0.02132907509803772, 'loss': 0.02604251727461815, 'path_mse': 0.0009143512579612434, 'subgoal_mse': 0.003158771898597479}
+[pbg] step=20000 {'first_step_mse': 0.0005454155616462231, 'idm_mse': 0.024035565555095673, 'loss': 0.027754347771406174, 'path_mse': 0.0007589916349388659, 'subgoal_mse': 0.0024143741466104984}
+[pbg] eval@20000 {'task1_success': 1.0, 'task1_death': 0.0, 'task2_success': 1.0, 'task2_death': 0.0, 'task3_success': 1.0, 'task3_death': 0.0, 'task4_success': 1.0, 'task4_death': 0.0, 'task5_success': 1.0, 'task5_death': 0.0, 'mean_success': 1.0}
+[pbg] step=22000 {'first_step_mse': 0.000512598198838532, 'idm_mse': 0.011066905222833157, 'loss': 0.015585716813802719, 'path_mse': 0.000828355026897043, 'subgoal_mse': 0.003177858889102936}
+[pbg] step=24000 {'first_step_mse': 0.0004550848971121013, 'idm_mse': 0.021993666887283325, 'loss': 0.02508735843002796, 'path_mse': 0.0006913120159879327, 'subgoal_mse': 0.0019472953863441944}
+[pbg] step=26000 {'first_step_mse': 0.0006176778697408736, 'idm_mse': 0.02435232698917389, 'loss': 0.02761036716401577, 'path_mse': 0.0007623529527336359, 'subgoal_mse': 0.0018780096434056759}
+[pbg] step=28000 {'first_step_mse': 0.00042134191608056426, 'idm_mse': 0.020889421924948692, 'loss': 0.024259883910417557, 'path_mse': 0.0005827408167533576, 'subgoal_mse': 0.002366380300372839}
+[pbg] step=30000 {'first_step_mse': 0.0006123778293840587, 'idm_mse': 0.03433769941329956, 'loss': 0.037880849093198776, 'path_mse': 0.0009191815042868257, 'subgoal_mse': 0.0020115887746214867}
+[pbg] eval@30000 {'task1_success': 1.0, 'task1_death': 0.0, 'task2_success': 1.0, 'task2_death': 0.0, 'task3_success': 1.0, 'task3_death': 0.0, 'task4_success': 0.0, 'task4_death': 0.0, 'task5_success': 0.0, 'task5_death': 1.0, 'mean_success': 0.6}
+[pbg] step=32000 {'first_step_mse': 0.000567095703445375, 'idm_mse': 0.01314101368188858, 'loss': 0.01668030023574829, 'path_mse': 0.0008393715834245086, 'subgoal_mse': 0.0021328183356672525}
+[pbg] step=34000 {'first_step_mse': 0.00041066587436944246, 'idm_mse': 0.010082858614623547, 'loss': 0.013654164038598537, 'path_mse': 0.0006452918169088662, 'subgoal_mse': 0.002515347907319665}
+[pbg] step=36000 {'first_step_mse': 0.00040810328209772706, 'idm_mse': 0.018590953201055527, 'loss': 0.02370510995388031, 'path_mse': 0.0006723188562318683, 'subgoal_mse': 0.00403373409062624}
+[pbg] step=38000 {'first_step_mse': 0.000563065696042031, 'idm_mse': 0.03301413357257843, 'loss': 0.036071740090847015, 'path_mse': 0.0007820524624548852, 'subgoal_mse': 0.0017124887090176344}
+[pbg] step=40000 {'first_step_mse': 0.0006167130777612329, 'idm_mse': 0.017277516424655914, 'loss': 0.02162270061671734, 'path_mse': 0.0008422306855209172, 'subgoal_mse': 0.0028862403705716133}
+[pbg] eval@40000 {'task1_success': 0.0, 'task1_death': 0.0, 'task2_success': 1.0, 'task2_death': 0.0, 'task3_success': 1.0, 'task3_death': 0.0, 'task4_success': 1.0, 'task4_death': 0.0, 'task5_success': 1.0, 'task5_death': 0.0, 'mean_success': 0.8}
+[pbg] step=42000 {'first_step_mse': 0.0004001904744654894, 'idm_mse': 0.015365171246230602, 'loss': 0.01774941384792328, 'path_mse': 0.0006413320079445839, 'subgoal_mse': 0.0013427208177745342}
+[pbg] step=44000 {'first_step_mse': 0.00047558214282616973, 'idm_mse': 0.01663992553949356, 'loss': 0.02084975689649582, 'path_mse': 0.0006945698987692595, 'subgoal_mse': 0.0030396804213523865}
+[pbg] step=46000 {'first_step_mse': 0.00033998966682702303, 'idm_mse': 0.025566529482603073, 'loss': 0.028417982161045074, 'path_mse': 0.0005123217706568539, 'subgoal_mse': 0.001999140251427889}
+[pbg] step=48000 {'first_step_mse': 0.00037909316597506404, 'idm_mse': 0.02399875409901142, 'loss': 0.027478521689772606, 'path_mse': 0.0006938326987437904, 'subgoal_mse': 0.0024068416096270084}
+[pbg] step=50000 {'first_step_mse': 0.0002785812830552459, 'idm_mse': 0.014421379193663597, 'loss': 0.0175472442060709, 'path_mse': 0.0005958963884040713, 'subgoal_mse': 0.0022513866424560547}
+[pbg] eval@50000 {'task1_success': 1.0, 'task1_death': 0.0, 'task2_success': 1.0, 'task2_death': 0.0, 'task3_success': 1.0, 'task3_death': 0.0, 'task4_success': 0.0, 'task4_death': 1.0, 'task5_success': 0.0, 'task5_death': 1.0, 'mean_success': 0.6}
+[pbg] final eval {'task1_success': 1.0, 'task1_death': 0.0, 'task2_success': 1.0, 'task2_death': 0.0, 'task3_success': 1.0, 'task3_death': 0.0, 'task4_success': 0.0, 'task4_death': 1.0, 'task5_success': 0.0, 'task5_death': 1.0, 'mean_success': 0.6}  (105.4s)
+######## pbg done in 109.8s ########
+
+
+######## pbf ########
+Loaded 95685 transitions from hazard_env/datasets/hazard2d-navigate.npz
+[pbf] step=1 {'first_step_mse': 0.03238976374268532, 'flow_mse': 3.350675106048584, 'idm_mse': 2.394731044769287, 'loss': 5.8719162940979, 'path_mse': 0.09412041306495667}
+[pbf] step=2000 {'first_step_mse': 0.0009368088794872165, 'flow_mse': 0.13426709175109863, 'idm_mse': 0.07490880787372589, 'loss': 0.2113209366798401, 'path_mse': 0.001208233879879117}
+[pbf] step=4000 {'first_step_mse': 0.0009290168527513742, 'flow_mse': 0.09417513012886047, 'idm_mse': 0.04689348489046097, 'loss': 0.14344415068626404, 'path_mse': 0.001446520327590406}
+[pbf] step=6000 {'first_step_mse': 0.0008467263542115688, 'flow_mse': 0.06367765367031097, 'idm_mse': 0.039141491055488586, 'loss': 0.10465479642152786, 'path_mse': 0.0009889266220852733}
+[pbf] step=8000 {'first_step_mse': 0.000685450155287981, 'flow_mse': 0.0584566630423069, 'idm_mse': 0.03035558946430683, 'loss': 0.09036048501729965, 'path_mse': 0.0008627839852124453}
+[pbf] step=10000 {'first_step_mse': 0.000882517546415329, 'flow_mse': 0.06469346582889557, 'idm_mse': 0.026959728449583054, 'loss': 0.09375695884227753, 'path_mse': 0.001221247250214219}
+[pbf] eval@10000 {'task1_success': 1.0, 'task1_death': 0.0, 'task2_success': 1.0, 'task2_death': 0.0, 'task3_success': 0.3333333333333333, 'task3_death': 0.6666666666666666, 'task4_success': 1.0, 'task4_death': 0.0, 'task5_success': 0.6666666666666666, 'task5_death': 0.3333333333333333, 'mean_success': 0.8}
+[pbf] step=12000 {'first_step_mse': 0.0006349882460199296, 'flow_mse': 0.02043594978749752, 'idm_mse': 0.028064386919140816, 'loss': 0.05001899600028992, 'path_mse': 0.0008836694760248065}
+[pbf] step=14000 {'first_step_mse': 0.0006909661460667849, 'flow_mse': 0.040707066655159, 'idm_mse': 0.03106459230184555, 'loss': 0.07339780777692795, 'path_mse': 0.0009351816261187196}
+[pbf] step=16000 {'first_step_mse': 0.0007357025751844049, 'flow_mse': 0.04492016136646271, 'idm_mse': 0.02442135661840439, 'loss': 0.0709981769323349, 'path_mse': 0.0009209583513438702}
+[pbf] step=18000 {'first_step_mse': 0.0006403200095519423, 'flow_mse': 0.04142167419195175, 'idm_mse': 0.02132907509803772, 'loss': 0.06430542469024658, 'path_mse': 0.0009143512579612434}
+[pbf] step=20000 {'first_step_mse': 0.0005454155616462231, 'flow_mse': 0.051907166838645935, 'idm_mse': 0.024035565555095673, 'loss': 0.07724714279174805, 'path_mse': 0.0007589916349388659}
+[pbf] eval@20000 {'task1_success': 1.0, 'task1_death': 0.0, 'task2_success': 1.0, 'task2_death': 0.0, 'task3_success': 0.3333333333333333, 'task3_death': 0.6666666666666666, 'task4_success': 0.6666666666666666, 'task4_death': 0.3333333333333333, 'task5_success': 1.0, 'task5_death': 0.0, 'mean_success': 0.8}
+[pbf] step=22000 {'first_step_mse': 0.000512598198838532, 'flow_mse': 0.06030908226966858, 'idm_mse': 0.011066905222833157, 'loss': 0.07271693646907806, 'path_mse': 0.000828355026897043}
+[pbf] step=24000 {'first_step_mse': 0.0004550848971121013, 'flow_mse': 0.029905982315540314, 'idm_mse': 0.021993666887283325, 'loss': 0.05304604768753052, 'path_mse': 0.0006913120159879327}
+[pbf] step=26000 {'first_step_mse': 0.0006176778697408736, 'flow_mse': 0.03126036748290062, 'idm_mse': 0.02435232698917389, 'loss': 0.056992724537849426, 'path_mse': 0.0007623529527336359}
+[pbf] step=28000 {'first_step_mse': 0.00042134191608056426, 'flow_mse': 0.03821065276861191, 'idm_mse': 0.020889421924948692, 'loss': 0.06010415405035019, 'path_mse': 0.0005827408167533576}
+[pbf] step=30000 {'first_step_mse': 0.0006123778293840587, 'flow_mse': 0.03975951671600342, 'idm_mse': 0.03433769941329956, 'loss': 0.07562877237796783, 'path_mse': 0.0009191815042868257}
+[pbf] eval@30000 {'task1_success': 1.0, 'task1_death': 0.0, 'task2_success': 1.0, 'task2_death': 0.0, 'task3_success': 1.0, 'task3_death': 0.0, 'task4_success': 1.0, 'task4_death': 0.0, 'task5_success': 1.0, 'task5_death': 0.0, 'mean_success': 1.0}
+[pbf] step=32000 {'first_step_mse': 0.000567095703445375, 'flow_mse': 0.029034219682216644, 'idm_mse': 0.01314101368188858, 'loss': 0.043581701815128326, 'path_mse': 0.0008393715834245086}
+[pbf] step=34000 {'first_step_mse': 0.00041066587436944246, 'flow_mse': 0.042298778891563416, 'idm_mse': 0.010082858614623547, 'loss': 0.05343759432435036, 'path_mse': 0.0006452918169088662}
+[pbf] step=36000 {'first_step_mse': 0.00040810328209772706, 'flow_mse': 0.030615072697401047, 'idm_mse': 0.018590953201055527, 'loss': 0.05028644949197769, 'path_mse': 0.0006723188562318683}
+[pbf] step=38000 {'first_step_mse': 0.000563065696042031, 'flow_mse': 0.027018949389457703, 'idm_mse': 0.03301413357257843, 'loss': 0.061378203332424164, 'path_mse': 0.0007820524624548852}
+[pbf] step=40000 {'first_step_mse': 0.0006167130777612329, 'flow_mse': 0.03225173428654671, 'idm_mse': 0.017277516424655914, 'loss': 0.05098819360136986, 'path_mse': 0.0008422306855209172}
+[pbf] eval@40000 {'task1_success': 1.0, 'task1_death': 0.0, 'task2_success': 1.0, 'task2_death': 0.0, 'task3_success': 1.0, 'task3_death': 0.0, 'task4_success': 1.0, 'task4_death': 0.0, 'task5_success': 1.0, 'task5_death': 0.0, 'mean_success': 1.0}
+[pbf] step=42000 {'first_step_mse': 0.0004001904744654894, 'flow_mse': 0.041577424854040146, 'idm_mse': 0.015365171246230602, 'loss': 0.0579841211438179, 'path_mse': 0.0006413320079445839}
+[pbf] step=44000 {'first_step_mse': 0.00047558214282616973, 'flow_mse': 0.0430670827627182, 'idm_mse': 0.01663992553949356, 'loss': 0.06087715923786163, 'path_mse': 0.0006945698987692595}
+[pbf] step=46000 {'first_step_mse': 0.00033998966682702303, 'flow_mse': 0.023421261459589005, 'idm_mse': 0.025566529482603073, 'loss': 0.04984010010957718, 'path_mse': 0.0005123217706568539}
+[pbf] step=48000 {'first_step_mse': 0.00037909316597506404, 'flow_mse': 0.03502447158098221, 'idm_mse': 0.02399875409901142, 'loss': 0.06009615212678909, 'path_mse': 0.0006938326987437904}
+[pbf] step=50000 {'first_step_mse': 0.0002785812830552459, 'flow_mse': 0.041406624019145966, 'idm_mse': 0.014421379193663597, 'loss': 0.05670247972011566, 'path_mse': 0.0005958963884040713}
+[pbf] eval@50000 {'task1_success': 1.0, 'task1_death': 0.0, 'task2_success': 1.0, 'task2_death': 0.0, 'task3_success': 1.0, 'task3_death': 0.0, 'task4_success': 1.0, 'task4_death': 0.0, 'task5_success': 1.0, 'task5_death': 0.0, 'mean_success': 1.0}
+[pbf] final eval {'task1_success': 1.0, 'task1_death': 0.0, 'task2_success': 1.0, 'task2_death': 0.0, 'task3_success': 1.0, 'task3_death': 0.0, 'task4_success': 1.0, 'task4_death': 0.0, 'task5_success': 1.0, 'task5_death': 0.0, 'mean_success': 1.0}  (92.6s)
+######## pbf done in 94.3s ########
+
+=== all done ===

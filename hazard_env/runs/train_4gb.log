@@ -1,0 +1,14 @@
+=== start mem_fraction=0.25 preallocate=false ===
+
+######## bc ########
+######## bc done in 32.8s ########
+
+######## hiql ########
+######## hiql done in 45.9s ########
+
+######## pbg ########
+######## pbg done in 31.8s ########
+
+######## pbf ########
+######## pbf done in 28.5s ########
+=== all done ===
