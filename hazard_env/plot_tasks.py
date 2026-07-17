@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import argparse
 import pathlib
 
 import matplotlib
@@ -11,16 +12,29 @@ import matplotlib.pyplot as plt
 import numpy as np
 from matplotlib.patches import Circle
 
-from hazard_env.env import ContinuousHazard2DEnv
+from hazard_env.env import (
+    GRAVITY_STRENGTHS,
+    ContinuousHazard2DEnv,
+    Hazard2DConfig,
+)
 
 
 def plot_tasks(
     save_path: pathlib.Path | None = None,
+    *,
+    env_name: str = "hazard_plain",
 ) -> pathlib.Path:
-    env = ContinuousHazard2DEnv(observation_mode="state")
+    if env_name not in GRAVITY_STRENGTHS:
+        raise ValueError(f"Unknown env_name={env_name!r}")
+    env = ContinuousHazard2DEnv(
+        config=Hazard2DConfig(
+            gravity_strength=GRAVITY_STRENGTHS[env_name]
+        ),
+        observation_mode="state",
+    )
     if save_path is None:
-        save_path = (
-            pathlib.Path(__file__).resolve().parent / "datasets" / "tasks_preview.png"
+        save_path = pathlib.Path(__file__).resolve().parent / "datasets" / (
+            f"{env_name}_tasks_preview.png"
         )
     save_path = pathlib.Path(save_path)
     save_path.parent.mkdir(parents=True, exist_ok=True)
@@ -90,7 +104,7 @@ def plot_tasks(
             va="bottom",
         )
 
-    ax.set_title("Hazard2D evaluation tasks 1–5")
+    ax.set_title(f"Hazard2D ({env_name}) evaluation tasks 1–5")
     ax.set_xlabel("x")
     ax.set_ylabel("y")
     ax.legend(loc="lower left", fontsize=8, framealpha=0.9)
@@ -102,7 +116,13 @@ def plot_tasks(
 
 
 def main() -> None:
-    path = plot_tasks()
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "--env", choices=tuple(GRAVITY_STRENGTHS), default="hazard_plain"
+    )
+    parser.add_argument("--save-path", type=pathlib.Path, default=None)
+    args = parser.parse_args()
+    path = plot_tasks(args.save_path, env_name=args.env)
     print(f"Wrote {path}")
 
 

@@ -54,7 +54,14 @@ class GCActor(nn.Module):
                 "log_stds", nn.initializers.zeros, (self.action_dim,)
             )
 
-    def __call__(self, observations, goals=None, temperature: float = 1.0):
+    def __call__(
+        self,
+        observations,
+        goals=None,
+        goal_encoded: bool = False,
+        temperature: float = 1.0,
+    ):
+        del goal_encoded  # goals are already features; always concat when present
         inputs = observations if goals is None else jnp.concatenate(
             [observations, goals], axis=-1
         )
@@ -68,6 +75,33 @@ class GCActor(nn.Module):
         return distrax.MultivariateNormalDiag(
             loc=means, scale_diag=jnp.exp(log_stds) * temperature
         )
+
+
+class LengthNormalize(nn.Module):
+    """Normalize vectors to length ``sqrt(dim)`` (OGBench HIQL)."""
+
+    @nn.compact
+    def __call__(self, x):
+        return x / jnp.linalg.norm(x, axis=-1, keepdims=True) * jnp.sqrt(
+            x.shape[-1]
+        )
+
+
+class GoalRepNet(nn.Module):
+    """State-dependent subgoal representation ``φ([s; g])``."""
+
+    hidden_dims: Sequence[int]
+    rep_dim: int
+    layer_norm: bool = True
+
+    @nn.compact
+    def __call__(self, obs_goal_concat):
+        x = MLP(
+            (*self.hidden_dims, self.rep_dim),
+            activate_final=False,
+            layer_norm=self.layer_norm,
+        )(obs_goal_concat)
+        return LengthNormalize()(x)
 
 
 class GCValue(nn.Module):
@@ -88,6 +122,8 @@ class GCValue(nn.Module):
 
 
 class EnsembleGCValue(nn.Module):
+    """Ensemble V(s, g) returning stacked ``(num_qs, B)`` values."""
+
     hidden_dims: Sequence[int]
     num_qs: int = 2
     layer_norm: bool = True
@@ -107,21 +143,123 @@ class EnsembleGCValue(nn.Module):
         )(observations, goals)
 
 
-class SubgoalNet(nn.Module):
-    """Predict a future state / subgoal from (obs, goal)."""
+class HIQLValue(nn.Module):
+    """OGBench HIQL value with its own state-dependent goal encoder."""
 
     hidden_dims: Sequence[int]
-    state_dim: int
+    rep_dim: int
+    num_qs: int = 2
     layer_norm: bool = True
 
     @nn.compact
     def __call__(self, observations, goals):
-        x = jnp.concatenate([observations, goals], axis=-1)
-        return MLP(
-            (*self.hidden_dims, self.state_dim),
+        goal_reps = GoalRepNet(
+            hidden_dims=self.hidden_dims,
+            rep_dim=self.rep_dim,
+            layer_norm=self.layer_norm,
+            name="goal_rep",
+        )(jnp.concatenate([observations, goals], axis=-1))
+        return EnsembleGCValue(
+            hidden_dims=self.hidden_dims,
+            num_qs=self.num_qs,
+            layer_norm=self.layer_norm,
+            name="value_net",
+        )(observations, goal_reps)
+
+
+class GCActionValue(nn.Module):
+    """Goal-conditioned scalar value with an optional action input."""
+
+    hidden_dims: Sequence[int]
+    layer_norm: bool = True
+
+    @nn.compact
+    def __call__(self, observations, goals=None, actions=None):
+        inputs = [observations]
+        if goals is not None:
+            inputs.append(goals)
+        if actions is not None:
+            inputs.append(actions)
+        x = jnp.concatenate(inputs, axis=-1)
+        x = MLP(
+            (*self.hidden_dims, 1),
             activate_final=False,
             layer_norm=self.layer_norm,
         )(x)
+        return jnp.squeeze(x, axis=-1)
+
+
+class EnsembleGCActionValue(nn.Module):
+    """Ensemble of action-conditioned goal values."""
+
+    hidden_dims: Sequence[int]
+    num_qs: int = 2
+    layer_norm: bool = True
+
+    @nn.compact
+    def __call__(self, observations, goals=None, actions=None):
+        ensemble = nn.vmap(
+            GCActionValue,
+            variable_axes={"params": 0},
+            split_rngs={"params": True},
+            in_axes=None,
+            out_axes=0,
+            axis_size=self.num_qs,
+        )
+        return ensemble(
+            hidden_dims=self.hidden_dims,
+            layer_norm=self.layer_norm,
+            name="ensemble",
+        )(observations, goals, actions)
+
+
+class ActionVectorField(nn.Module):
+    """Flow-matching velocity field over action vectors."""
+
+    hidden_dims: Sequence[int]
+    action_dim: int
+    layer_norm: bool = True
+
+    @nn.compact
+    def __call__(self, observations, goals=None, actions=None, times=None):
+        inputs = [observations]
+        if goals is not None:
+            inputs.append(goals)
+        if actions is not None:
+            inputs.append(actions)
+        if times is not None:
+            inputs.append(times)
+        x = jnp.concatenate(inputs, axis=-1)
+        return MLP(
+            (*self.hidden_dims, self.action_dim),
+            activate_final=False,
+            layer_norm=self.layer_norm,
+        )(x)
+
+
+class SubgoalNet(nn.Module):
+    """Diagonal-Gaussian subgoal q(z|s,g): returns ``(mu, log_std)``."""
+
+    hidden_dims: Sequence[int]
+    state_dim: int
+    layer_norm: bool = True
+    log_std_min: float = -5.0
+    log_std_max: float = 1.0
+
+    @nn.compact
+    def __call__(self, observations, goals):
+        x = jnp.concatenate([observations, goals], axis=-1)
+        h = MLP(
+            (*self.hidden_dims,),
+            activate_final=True,
+            layer_norm=self.layer_norm,
+        )(x)
+        mu = nn.Dense(self.state_dim, kernel_init=default_init(1e-2), name="mu")(h)
+        log_std = nn.Dense(
+            self.state_dim, kernel_init=default_init(1e-2), name="log_std"
+        )(h)
+        log_std = jnp.clip(log_std, self.log_std_min, self.log_std_max)
+        return mu, log_std
 
 
 class InverseDynamicsNet(nn.Module):
@@ -190,3 +328,20 @@ class PathResidualNet(nn.Module):
             layer_norm=self.layer_norm,
         )(x)
         return y.reshape(b, t, self.state_dim)
+
+
+class ScalarValueNet(nn.Module):
+    """Logit V(s, g) for transitive reachability (sigmoid → (0,1])."""
+
+    hidden_dims: Sequence[int]
+    layer_norm: bool = True
+
+    @nn.compact
+    def __call__(self, observations, goals):
+        x = jnp.concatenate([observations, goals], axis=-1)
+        x = MLP(
+            (*self.hidden_dims, 1),
+            activate_final=False,
+            layer_norm=self.layer_norm,
+        )(x)
+        return jnp.squeeze(x, axis=-1)

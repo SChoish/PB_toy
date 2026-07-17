@@ -9,8 +9,8 @@ import jax
 import jax.numpy as jnp
 import optax
 
-from hazard_env.agents.flax_utils import ModuleDict, TrainState, nonpytree_field
-from hazard_env.agents.networks import GCActor
+from hazard_env.utils.flax_utils import ModuleDict, TrainState, nonpytree_field
+from hazard_env.utils.networks import GCActor
 
 
 class BCAgent(flax.struct.PyTreeNode):

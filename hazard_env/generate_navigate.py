@@ -1,13 +1,17 @@
-"""Collect an OGBench-style *navigate* dataset for ContinuousHazard2DEnv.
+"""Collect Hazard2D offline datasets by env / policy / size.
 
-One episode keeps going after each goal reach: a new safe goal is sampled and
-the scripted repulsion oracle continues until hazard death or the time limit.
+Policies:
+  - ``navigate``: scripted oracle (+ small action noise)
+  - ``noisy``: mixture of navigate (0.8) and uniform random (0.2)
+  - ``random``: uniform random actions
+
+Sizes (train / val): ``1k`` (1_000 / 100), ``10k`` (10_000 / 1_000),
+``100k`` (100_000 / 10_000).
 
 Example::
 
     PYTHONPATH=/path/to/toy_examples \\
-      python -m hazard_env.generate_navigate \\
-        --num-episodes 200 --seed 0
+      python -m hazard_env.generate_navigate --generate-all
 """
 
 from __future__ import annotations
@@ -19,9 +23,20 @@ from typing import Literal
 
 import numpy as np
 
-from hazard_env.env import ContinuousHazard2DEnv, Hazard2DConfig
+from hazard_env.env import GRAVITY_STRENGTHS, ContinuousHazard2DEnv, Hazard2DConfig
 
 PreferSide = Literal["north", "south"]
+PolicyName = Literal["navigate", "noisy", "random"]
+SizeName = Literal["1k", "10k", "100k"]
+
+POLICIES: tuple[PolicyName, ...] = ("navigate", "noisy", "random")
+SIZES: tuple[SizeName, ...] = ("1k", "10k", "100k")
+SIZE_STEPS: dict[SizeName, tuple[int, int]] = {
+    "1k": (1_000, 100),
+    "10k": (10_000, 1_000),
+    "100k": (100_000, 10_000),
+}
+NOISY_NAVIGATE_PROB = 0.8
 
 
 def _unit(v: np.ndarray, eps: float = 1e-8) -> np.ndarray:
@@ -32,7 +47,8 @@ def _unit(v: np.ndarray, eps: float = 1e-8) -> np.ndarray:
 
 
 def _clip_to_arena(env: ContinuousHazard2DEnv, point: np.ndarray) -> np.ndarray:
-    margin = env.config.agent_radius + env.config.spawn_clearance
+    # Keep vias just inside the hard wall (agent radius only).
+    margin = env.config.agent_radius
     low = env.config.arena_low + margin
     high = env.config.arena_high - margin
     return np.clip(point, low, high).astype(np.float32)
@@ -58,7 +74,7 @@ def choose_prefer_side(
         via = hazard + np.array(
             [0.0, y_sign * (lethal + clearance)], dtype=np.float32
         )
-        via[0] = float(np.clip(0.55 * pos[0] + 0.45 * goal[0], -0.85, 0.85))
+        via[0] = float(np.clip(0.55 * pos[0] + 0.45 * goal[0], -0.95, 0.95))
         via = _clip_to_arena(env, via)
         # Penalize vias that still graze the hazard on either leg.
         hit1 = ContinuousHazard2DEnv._segment_hits_circle(
@@ -92,7 +108,7 @@ def navigation_subgoal(
     # Two-stage via: approach the preferred side, then cross past the hazard.
     side = hazard + np.array([0.0, y_sign * (lethal + clearance)], dtype=np.float32)
     # Keep the via between start and goal in x so we progress across the arena.
-    side[0] = float(np.clip(0.55 * pos[0] + 0.45 * goal[0], -0.85, 0.85))
+    side[0] = float(np.clip(0.55 * pos[0] + 0.45 * goal[0], -0.95, 0.95))
     side = _clip_to_arena(env, side)
 
     # If we are already on the preferred side with clearance, aim slightly past
@@ -112,10 +128,10 @@ def oracle_action(
     env: ContinuousHazard2DEnv,
     *,
     prefer_side: PreferSide | None = None,
-    repulsion_scale: float = 1.15,
-    repulsion_margin: float = 0.42,
+    repulsion_scale: float | None = None,
+    repulsion_margin: float | None = None,
 ) -> np.ndarray:
-    """PD-style thrust toward a hazard-aware subgoal."""
+    """PD controller that avoids the hazard and cancels the signed field."""
     if prefer_side is None:
         prefer_side = choose_prefer_side(env)
 
@@ -125,6 +141,11 @@ def oracle_action(
     subgoal = navigation_subgoal(env, prefer_side=prefer_side)
 
     hazard = env.hazard_center.astype(np.float32)
+    has_field = float(env.config.gravity_strength) != 0.0
+    if repulsion_scale is None:
+        repulsion_scale = 1.35 if has_field else 1.15
+    if repulsion_margin is None:
+        repulsion_margin = 0.48 if has_field else 0.42
     from_hazard = pos - hazard
     dist_h = float(np.linalg.norm(from_hazard))
     lethal = env.hazard_radius + env.config.agent_radius
@@ -152,7 +173,11 @@ def oracle_action(
     # Approximate inverse dynamics for the linear-drag point mass.
     dt = float(env.config.dt)
     drag = float(env.config.linear_drag)
-    accel = (desired_vel - vel) / max(dt, 1e-3) + drag * vel
+    accel = (
+        (desired_vel - vel) / max(dt, 1e-3)
+        + drag * vel
+        - env._external_acceleration(pos)
+    )
 
     # Explicit repulsion acceleration when inside the soft band.
     if dist_h < safe_band:
@@ -192,21 +217,69 @@ def _sample_new_goal(env: ContinuousHazard2DEnv) -> np.ndarray:
     )
 
 
-def collect_navigate_dataset(
+def _random_action(rng: np.random.Generator) -> np.ndarray:
+    return np.array(
+        [rng.uniform(-np.pi, np.pi), rng.uniform(0.0, 1.0)],
+        dtype=np.float32,
+    )
+
+
+def _navigate_action(
+    env: ContinuousHazard2DEnv,
+    rng: np.random.Generator,
     *,
-    num_train_episodes: int,
-    num_val_episodes: int,
+    noise: float,
+) -> np.ndarray:
+    action = oracle_action(env)
+    if noise > 0.0:
+        noise_vec = rng.normal(0.0, noise, size=action.shape).astype(np.float32)
+        noise_vec[0] *= 0.7
+        action = action + noise_vec
+    action[0] = float(np.clip(action[0], -np.pi, np.pi))
+    action[1] = float(np.clip(action[1], 0.0, 1.0))
+    return action.astype(np.float32)
+
+
+def dataset_stem(env_name: str, policy: PolicyName, size: SizeName) -> str:
+    return f"{env_name}_{policy}_{size}"
+
+
+def collect_dataset(
+    *,
+    env_name: str,
+    policy: PolicyName,
+    size: SizeName,
     seed: int,
     max_episode_steps: int,
     noise: float,
-    save_path: pathlib.Path,
-    preview_path: pathlib.Path | None,
-    preview_episodes: int,
+    save_path: pathlib.Path | None = None,
+    preview_path: pathlib.Path | None = None,
+    preview_episodes: int = 8,
+    navigate_prob: float = NOISY_NAVIGATE_PROB,
 ) -> dict[str, float]:
+    """Collect until train/val step budgets for ``size`` are filled."""
+    if env_name not in GRAVITY_STRENGTHS:
+        raise ValueError(f"Unknown env_name={env_name!r}")
+    if policy not in POLICIES:
+        raise ValueError(f"Unknown policy={policy!r}")
+    if size not in SIZE_STEPS:
+        raise ValueError(f"Unknown size={size!r}")
+
+    target_train_steps, target_val_steps = SIZE_STEPS[size]
+    gravity_strength = float(GRAVITY_STRENGTHS[env_name])
+    datasets_dir = pathlib.Path(__file__).resolve().parent / "datasets"
+    stem = dataset_stem(env_name, policy, size)
+    if save_path is None:
+        save_path = datasets_dir / f"{stem}.npz"
+    if preview_path is None:
+        preview_path = datasets_dir / f"{stem}_preview.png"
+
     config = Hazard2DConfig(
         max_episode_steps=max_episode_steps,
         task_mode="random",
         min_start_goal_distance=0.7,
+        spawn_clearance=0.02,
+        gravity_strength=gravity_strength,
     )
     env = ContinuousHazard2DEnv(
         config=config,
@@ -218,28 +291,29 @@ def collect_navigate_dataset(
     rng = np.random.default_rng(seed)
 
     total_steps = 0
-    total_train_steps = 0
     n_deaths = 0
     n_goal_reaches = 0
+    n_episodes = 0
+    n_random_actions = 0
     preview_trajs: list[np.ndarray] = []
+    target_total_steps = int(target_train_steps + target_val_steps)
 
-    total_episodes = num_train_episodes + num_val_episodes
-    for ep_idx in range(total_episodes):
-        ep_seed = int(seed + ep_idx + 1)
+    while total_steps < target_total_steps:
+        ep_seed = int(seed + n_episodes + 1)
         ob, info = env.reset(seed=ep_seed, options={"task_mode": "random"})
 
         done = False
-        ep_goals = 0
         ep_positions: list[np.ndarray] = [env.position.copy()]
 
-        while not done:
-            action = oracle_action(env)
-            # Angle noise is more dangerous near the hazard; keep it modest.
-            noise_vec = rng.normal(0.0, noise, size=action.shape).astype(np.float32)
-            noise_vec[0] *= 0.7
-            action = action + noise_vec
-            action[0] = float(np.clip(action[0], -np.pi, np.pi))
-            action[1] = float(np.clip(action[1], 0.0, 1.0))
+        while not done and total_steps < target_total_steps:
+            use_random = policy == "random" or (
+                policy == "noisy" and float(rng.random()) >= navigate_prob
+            )
+            if use_random:
+                action = _random_action(rng)
+                n_random_actions += 1
+            else:
+                action = _navigate_action(env, rng, noise=noise)
 
             goal_before = env.goal.copy()
             next_ob, _reward, terminated, truncated, info = env.step(action)
@@ -247,15 +321,11 @@ def collect_navigate_dataset(
             success = bool(info.get("is_success", False))
 
             if success:
-                ep_goals += 1
                 n_goal_reaches += 1
-                # Bleed momentum before the next leg; high speed into a new
-                # lethal chord is the main failure mode for this point-mass.
                 env.velocity = (env.velocity * 0.25).astype(env.velocity.dtype, copy=False)
                 try:
                     env.set_goal(_sample_new_goal(env))
                 except ValueError:
-                    # Extremely rare; keep current goal and continue.
                     pass
 
             dataset["observations"].append(np.asarray(ob, dtype=np.float32))
@@ -266,53 +336,56 @@ def collect_navigate_dataset(
 
             ep_positions.append(env.position.copy())
             ob = next_ob
+            total_steps += 1
 
         if info.get("dead", False):
             n_deaths += 1
-
-        total_steps += env.elapsed_steps
-        if ep_idx < num_train_episodes:
-            total_train_steps += env.elapsed_steps
+        n_episodes += 1
 
         if preview_path is not None and len(preview_trajs) < preview_episodes:
             preview_trajs.append(np.stack(ep_positions, axis=0))
 
     save_path = pathlib.Path(save_path)
     save_path.parent.mkdir(parents=True, exist_ok=True)
-    val_path = pathlib.Path(str(save_path).replace(".npz", "-val.npz"))
-    if val_path == save_path:
-        val_path = save_path.with_name(save_path.stem + "-val.npz")
+    val_path = save_path.with_name(save_path.stem + "_val.npz")
 
     train_dataset: dict[str, np.ndarray] = {}
     val_dataset: dict[str, np.ndarray] = {}
     for key, values in dataset.items():
-        if key == "terminals" or key == "successes":
-            dtype = bool
-        else:
-            dtype = np.float32
+        dtype = bool if key in ("terminals", "successes") else np.float32
         arr = np.asarray(values, dtype=dtype)
-        train_dataset[key] = arr[:total_train_steps]
-        val_dataset[key] = arr[total_train_steps:]
+        train_dataset[key] = arr[:target_train_steps]
+        val_dataset[key] = arr[target_train_steps:target_total_steps]
 
     np.savez_compressed(save_path, **train_dataset)
     np.savez_compressed(val_path, **val_dataset)
 
     stats = {
         "total_steps": float(total_steps),
-        "train_steps": float(total_train_steps),
-        "val_steps": float(total_steps - total_train_steps),
-        "death_rate": float(n_deaths / max(total_episodes, 1)),
-        "goals_per_episode": float(n_goal_reaches / max(total_episodes, 1)),
+        "train_steps": float(len(train_dataset["observations"])),
+        "val_steps": float(len(val_dataset["observations"])),
+        "death_rate": float(n_deaths / max(n_episodes, 1)),
+        "goals_per_episode": float(n_goal_reaches / max(n_episodes, 1)),
         "num_deaths": float(n_deaths),
         "num_goal_reaches": float(n_goal_reaches),
+        "num_episodes": float(n_episodes),
+        "random_action_frac": float(n_random_actions / max(total_steps, 1)),
+        "gravity_strength": float(gravity_strength),
+        "policy": policy,
+        "size": size,
+        "env_name": env_name,
     }
 
     print(f"Saved train: {save_path}  ({int(stats['train_steps'])} steps)")
     print(f"Saved val:   {val_path}  ({int(stats['val_steps'])} steps)")
     print(
+        f"{env_name}/{policy}/{size}  "
+        f"gravity={gravity_strength:.2f}  "
+        f"episodes={n_episodes}  "
         f"death_rate={stats['death_rate']:.3f}  "
         f"goals/ep={stats['goals_per_episode']:.2f}  "
-        f"deaths={int(stats['num_deaths'])}/{total_episodes}"
+        f"random_frac={stats['random_action_frac']:.3f}  "
+        f"deaths={int(stats['num_deaths'])}/{n_episodes}"
     )
 
     if preview_path is not None and preview_trajs:
@@ -323,6 +396,7 @@ def collect_navigate_dataset(
             hazard_radius=env.hazard_radius,
             arena_low=env.config.arena_low,
             arena_high=env.config.arena_high,
+            title=f"{env_name} {policy} {size}",
         )
         print(f"Wrote preview: {preview_path}")
 
@@ -338,6 +412,7 @@ def _write_preview(
     hazard_radius: float,
     arena_low: float,
     arena_high: float,
+    title: str = "dataset preview",
 ) -> None:
     import matplotlib
 
@@ -366,7 +441,7 @@ def _write_preview(
     for traj, color in zip(trajs, colors, strict=False):
         ax.plot(traj[:, 0], traj[:, 1], color=color, lw=1.2, alpha=0.9, zorder=3)
         ax.scatter(traj[0, 0], traj[0, 1], s=18, color=color, zorder=4)
-    ax.set_title("navigate preview")
+    ax.set_title(title)
     ax.set_xlabel("x")
     ax.set_ylabel("y")
     fig.tight_layout()
@@ -375,52 +450,63 @@ def _write_preview(
 
 
 def parse_args() -> argparse.Namespace:
-    default_out = (
-        pathlib.Path(__file__).resolve().parent / "datasets" / "hazard2d-navigate.npz"
-    )
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--seed", type=int, default=0)
-    parser.add_argument("--num-episodes", type=int, default=200)
+    parser.add_argument("--env", choices=tuple(GRAVITY_STRENGTHS), default="hazard_plain")
+    parser.add_argument("--policy", choices=POLICIES, default="navigate")
+    parser.add_argument("--size", choices=SIZES, default="100k")
     parser.add_argument(
-        "--num-val-episodes",
-        type=int,
-        default=None,
-        help="Defaults to num_episodes // 10.",
+        "--generate-all",
+        action="store_true",
+        help="Generate all env × policy × size combinations.",
     )
     parser.add_argument("--max-episode-steps", type=int, default=500)
-    parser.add_argument("--noise", type=float, default=0.10)
-    parser.add_argument("--save-path", type=pathlib.Path, default=default_out)
     parser.add_argument(
-        "--preview-path",
-        type=pathlib.Path,
-        default=None,
-        help="Optional trajectory scatter PNG path.",
+        "--noise",
+        type=float,
+        default=0.10,
+        help="Gaussian action noise for navigate / noisy-navigate actions.",
     )
+    parser.add_argument(
+        "--navigate-prob",
+        type=float,
+        default=NOISY_NAVIGATE_PROB,
+        help="Probability of navigate action under --policy noisy.",
+    )
+    parser.add_argument("--save-path", type=pathlib.Path, default=None)
+    parser.add_argument("--preview-path", type=pathlib.Path, default=None)
     parser.add_argument("--preview-episodes", type=int, default=8)
     return parser.parse_args()
 
 
 def main() -> None:
     args = parse_args()
-    num_val = (
-        args.num_val_episodes
-        if args.num_val_episodes is not None
-        else max(1, args.num_episodes // 10)
-    )
-    preview = args.preview_path
-    if preview is None:
-        preview = args.save_path.parent / "navigate_preview.png"
+    jobs: list[tuple[str, PolicyName, SizeName]]
+    if args.generate_all:
+        jobs = [
+            (env_name, policy, size)
+            for env_name in GRAVITY_STRENGTHS
+            for policy in POLICIES
+            for size in SIZES
+        ]
+    else:
+        jobs = [(args.env, args.policy, args.size)]
 
-    collect_navigate_dataset(
-        num_train_episodes=args.num_episodes,
-        num_val_episodes=num_val,
-        seed=args.seed,
-        max_episode_steps=args.max_episode_steps,
-        noise=args.noise,
-        save_path=args.save_path,
-        preview_path=preview,
-        preview_episodes=args.preview_episodes,
-    )
+    print(f"Generating {len(jobs)} dataset(s)", flush=True)
+    for env_name, policy, size in jobs:
+        collect_dataset(
+            env_name=env_name,
+            policy=policy,
+            size=size,
+            seed=args.seed,
+            max_episode_steps=args.max_episode_steps,
+            noise=args.noise,
+            save_path=args.save_path if not args.generate_all else None,
+            preview_path=args.preview_path if not args.generate_all else None,
+            preview_episodes=args.preview_episodes,
+            navigate_prob=args.navigate_prob,
+        )
+    print("=== DATASET_GENERATION_DONE ===", flush=True)
 
 
 if __name__ == "__main__":

@@ -12,7 +12,6 @@ venv/
 # Keep training logs tracked; ignore other run artifacts.
 hazard_env/runs/*
 !hazard_env/runs/*.log
-hazard_grav/runs/*
-!hazard_grav/runs/*.log
-hazard_anti_grav/runs/*
-!hazard_anti_grav/runs/*.log
+hazard_env/checkpoints/
+hazard_env/renders/
+hazard_env/plots/

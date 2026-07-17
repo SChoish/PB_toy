@@ -1,0 +1,30 @@
+=== TR/PB missing re-render: 13 jobs (mem_fraction=0.5) ===
+######## [1/13] RENDER hazard_plain/navigate/1k/pbf_gap5 ########
+/home/svcho/anaconda3/envs/offrl/lib/python3.11/subprocess.py:1885: RuntimeWarning: os.fork() was called. os.fork() is incompatible with multithreaded code, and JAX is multithreaded, so this will likely lead to a deadlock.
+  self.pid = _fork_exec(
+######## [1/13] RENDER-DONE hazard_plain/navigate/1k/pbf_gap5 videos=5 seconds=155.7 ########
+######## [2/13] RENDER hazard_plain/noisy/1k/pbf_gap0 ########
+######## [2/13] RENDER-DONE hazard_plain/noisy/1k/pbf_gap0 videos=5 seconds=235.0 ########
+######## [3/13] RENDER hazard_plain/noisy/1k/pbf_gap5 ########
+######## [3/13] RENDER-DONE hazard_plain/noisy/1k/pbf_gap5 videos=5 seconds=263.0 ########
+######## [4/13] RENDER hazard_plain/noisy/1k/pbg_gap0 ########
+######## [4/13] RENDER-DONE hazard_plain/noisy/1k/pbg_gap0 videos=5 seconds=96.4 ########
+######## [5/13] RENDER hazard_plain/noisy/1k/pbg_gap5 ########
+######## [5/13] RENDER-DONE hazard_plain/noisy/1k/pbg_gap5 videos=5 seconds=75.4 ########
+######## [6/13] RENDER hazard_plain/noisy/1k/tr_hiql_gap0 ########
+######## [6/13] RENDER-DONE hazard_plain/noisy/1k/tr_hiql_gap0 videos=5 seconds=29.5 ########
+######## [7/13] RENDER hazard_plain/noisy/1k/tr_hiql_gap5 ########
+######## [7/13] RENDER-DONE hazard_plain/noisy/1k/tr_hiql_gap5 videos=5 seconds=24.7 ########
+######## [8/13] RENDER hazard_plain/random/1k/pbf_gap0 ########
+######## [8/13] RENDER-DONE hazard_plain/random/1k/pbf_gap0 videos=5 seconds=174.3 ########
+######## [9/13] RENDER hazard_plain/random/1k/pbf_gap5 ########
+######## [9/13] RENDER-DONE hazard_plain/random/1k/pbf_gap5 videos=5 seconds=212.1 ########
+######## [10/13] RENDER hazard_plain/random/1k/pbg_gap0 ########
+######## [10/13] RENDER-DONE hazard_plain/random/1k/pbg_gap0 videos=5 seconds=75.9 ########
+######## [11/13] RENDER hazard_plain/random/1k/pbg_gap5 ########
+######## [11/13] RENDER-DONE hazard_plain/random/1k/pbg_gap5 videos=5 seconds=87.0 ########
+######## [12/13] RENDER hazard_plain/random/1k/tr_hiql_gap0 ########
+######## [12/13] RENDER-DONE hazard_plain/random/1k/tr_hiql_gap0 videos=5 seconds=25.1 ########
+######## [13/13] RENDER hazard_plain/random/1k/tr_hiql_gap5 ########
+######## [13/13] RENDER-DONE hazard_plain/random/1k/tr_hiql_gap5 videos=5 seconds=25.4 ########
+=== TR_PB_RERENDER_DONE ===

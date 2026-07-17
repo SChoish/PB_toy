@@ -7,14 +7,17 @@ Repo: https://github.com/SChoish/PB_toy
 ```
 toy_examples/
 ├── concept/          # single-panel concept figure
-├── hazard_env/       # ContinuousHazard2DEnv + navigate dataset + toy agents
+├── hazard_env/       # Hazard2D modes + datasets + toy agents
 │   ├── env.py
 │   ├── generate_navigate.py
 │   ├── plot_tasks.py
 │   ├── HYPERPARAMETERS.md
-│   ├── agents/       # bc, hiql, pbg, pbf (JAX toys)
+│   ├── agents/       # bc, hiql, dynamics (pbg/pbf), critic, train
+│   ├── utils/        # flax_utils, networks, dynamics (bridge), datasets
 │   ├── tests/
-│   └── datasets/
+│   ├── datasets/     # hazard_plain / hazard_grav / hazard_anti_grav
+│   ├── checkpoints/  # grouped by environment mode
+│   └── renders/      # grouped by environment mode
 └── refs/             # reference sketches / paper pages
 ```
 
@@ -23,16 +26,28 @@ toy_examples/
 ```bash
 export PYTHONPATH=/path/to/toy_examples:$PYTHONPATH
 
-# collect navigate dataset
-python -m hazard_env.generate_navigate --num-episodes 200
+# collect datasets: env × {navigate,noisy,random} × {1k,10k,100k}
+python -m hazard_env.generate_navigate --generate-all
+# or one combo
+python -m hazard_env.generate_navigate --env hazard_plain --policy noisy --size 10k
+
+# signed field variants are included via --env / --generate-all
 
 # plot fixed eval tasks 1–5
-python -m hazard_env.plot_tasks
+python -m hazard_env.plot_tasks --env hazard_grav
+python -m hazard_env.plot_coverage --env hazard_anti_grav --policy navigate --size 100k
 
 # train a toy agent
-python -m hazard_env.agents.train --agent bc --steps 50000
-# agents: bc | hiql | pbg | pbf
+python -m hazard_env.agents.train --env hazard_plain --agent bc --steps 50000 \
+  --dataset-policy navigate --dataset-size 100k
+# envs: hazard_plain | hazard_grav | hazard_anti_grav
+# agents: bc | hiql | tr_hiql | pbg | pbf
 ```
+
+All three modes use `ContinuousHazard2DEnv` and `Hazard2DConfig`.
+`gravity_strength=0` disables the field, positive values attract toward the
+hazard, and negative values repel away from it. Field magnitude follows the
+inverse square of the distance from the hazard center.
 
 Eval tasks: `env.reset(options={"task_id": 1})` … `5` (easy → hard).
 

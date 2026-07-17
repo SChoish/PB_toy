@@ -32,6 +32,13 @@ Array = np.ndarray
 ObservationMode = Literal["state", "state_goal", "goal_dict"]
 RewardMode = Literal["sparse", "dense"]
 TaskMode = Literal["random", "cross_hazard"]
+HazardMode = Literal["hazard_plain", "hazard_grav", "hazard_anti_grav"]
+
+GRAVITY_STRENGTHS: Mapping[HazardMode, float] = {
+    "hazard_plain": 0.0,
+    "hazard_grav": 0.45,
+    "hazard_anti_grav": -0.45,
+}
 
 
 @dataclass(frozen=True)
@@ -42,9 +49,9 @@ class Hazard2DConfig:
     arena_low: float = -1.0
     arena_high: float = 1.0
     hazard_center: tuple[float, float] = (0.05, -0.03)
-    hazard_radius: float = 0.17
+    hazard_radius: float = 0.20
     agent_radius: float = 0.025
-    goal_radius: float = 0.08
+    goal_radius: float = 0.06
 
     # Point-mass dynamics.
     dt: float = 0.05
@@ -52,11 +59,15 @@ class Hazard2DConfig:
     max_acceleration: float = 3.0
     max_speed: float = 1.0
     linear_drag: float = 1.1
-    wall_restitution: float = 0.25
+    wall_restitution: float = 0.10
+    # Signed inverse-square field around the hazard:
+    # positive attracts toward the center, negative repels, zero disables it.
+    gravity_strength: float = 0.0
+    gravity_soft_min: float = 0.08
 
     # Episode and task sampling.
     max_episode_steps: int = 300
-    min_start_goal_distance: float = 0.9
+    min_start_goal_distance: float = 1.0
     spawn_clearance: float = 0.08
     task_mode: TaskMode = "random"
 
@@ -89,6 +100,8 @@ class Hazard2DConfig:
             raise ValueError("linear_drag must be non-negative")
         if not 0.0 <= self.wall_restitution <= 1.0:
             raise ValueError("wall_restitution must be in [0, 1]")
+        if self.gravity_soft_min <= 0.0:
+            raise ValueError("gravity_soft_min must be positive")
         if self.max_episode_steps < 1:
             raise ValueError("max_episode_steps must be at least 1")
         if self.min_start_goal_distance < 0.0:
@@ -351,33 +364,33 @@ class ContinuousHazard2DEnv(gym.Env):
         # (init_xy, goal_xy, short_name, difficulty)
         tasks = [
             (
-                (-0.70, 0.55),
-                (-0.25, 0.60),
+                (-0.75, 0.50),
+                (-0.15, 0.55),
                 "same_side_short",
                 "easy",
             ),
             (
-                (-0.75, 0.55),
-                (0.75, 0.60),
+                (-0.80, 0.40),
+                (0.80, 0.45),
                 "same_side_long",
                 "easy_medium",
             ),
             (
-                (-0.75, 0.12),
-                (0.75, 0.08),
+                (-0.78, 0.20),
+                (0.78, 0.12),
                 "skim_detour",
                 "medium",
             ),
             (
-                (-0.75, -0.05),
-                (0.75, -0.05),
-                "cross_hazard",
+                (-0.85, -0.75),
+                (0.85, 0.75),
+                "cross_corners",
                 "hard",
             ),
             (
-                (-0.80, -0.70),
-                (0.80, 0.70),
-                "cross_corners",
+                (-0.82, -0.03),
+                (0.82, -0.03),
+                "cross_hazard",
                 "hardest",
             ),
         ]
@@ -424,7 +437,8 @@ class ContinuousHazard2DEnv(gym.Env):
 
         for _ in range(self.config.physics_substeps):
             # Semi-implicit Euler integration.
-            self.velocity = self.velocity + acceleration * sub_dt
+            total_accel = acceleration + self._external_acceleration(self.position)
+            self.velocity = self.velocity + total_accel * sub_dt
             self.velocity = self.velocity * drag_factor
             self.velocity = self._clip_speed(self.velocity)
 
@@ -721,6 +735,17 @@ class ContinuousHazard2DEnv(gym.Env):
     # Physics
     # ------------------------------------------------------------------
 
+    def _external_acceleration(self, position: Array) -> Array:
+        """Signed inverse-square acceleration around the hazard center."""
+        strength = float(self.config.gravity_strength)
+        if strength == 0.0:
+            return np.zeros(2, dtype=self._dtype)
+        delta = self._hazard_center - np.asarray(position, dtype=self._dtype)
+        dist = float(np.linalg.norm(delta))
+        softened_dist = max(dist, float(self.config.gravity_soft_min))
+        scale = strength / softened_dist**3
+        return (delta * scale).astype(self._dtype, copy=False)
+
     def _clip_speed(self, velocity: Array) -> Array:
         speed = float(np.linalg.norm(velocity))
         if speed > self.config.max_speed:
@@ -942,12 +967,21 @@ def register_environment() -> None:
     """
     from gymnasium.envs.registration import register, registry
 
-    environment_id = "ContinuousHazard2D-v0"
-    if environment_id not in registry:
+    registrations = {
+        "ContinuousHazard2D-v0": GRAVITY_STRENGTHS["hazard_plain"],
+        "HazardGrav2D-v0": GRAVITY_STRENGTHS["hazard_grav"],
+        "HazardAntiGrav2D-v0": GRAVITY_STRENGTHS["hazard_anti_grav"],
+    }
+    for environment_id, gravity_strength in registrations.items():
+        if environment_id in registry:
+            continue
         register(
             id=environment_id,
             entry_point="hazard_env.env:ContinuousHazard2DEnv",
-            kwargs={"observation_mode": "state_goal"},
+            kwargs={
+                "config": Hazard2DConfig(gravity_strength=gravity_strength),
+                "observation_mode": "state_goal",
+            },
             max_episode_steps=None,  # env handles its own time limit via truncated
         )
 
