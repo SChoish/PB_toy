@@ -1,7 +1,7 @@
 """Run both PathBridger concept figure variants."""
 
-from codes_numerical import main as run_numerical
-from codes_nn import main as run_nn
+from .codes_numerical import main as run_numerical
+from .codes_nn import main as run_nn
 
 
 if __name__ == "__main__":

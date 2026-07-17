@@ -85,8 +85,16 @@ class Hazard2DConfig:
             raise ValueError("max_acceleration must be positive")
         if self.max_speed <= 0.0:
             raise ValueError("max_speed must be positive")
+        if self.linear_drag < 0.0:
+            raise ValueError("linear_drag must be non-negative")
+        if not 0.0 <= self.wall_restitution <= 1.0:
+            raise ValueError("wall_restitution must be in [0, 1]")
         if self.max_episode_steps < 1:
             raise ValueError("max_episode_steps must be at least 1")
+        if self.min_start_goal_distance < 0.0:
+            raise ValueError("min_start_goal_distance must be non-negative")
+        if self.spawn_clearance < 0.0:
+            raise ValueError("spawn_clearance must be non-negative")
         if self.reward_mode not in ("sparse", "dense"):
             raise ValueError(f"Unknown reward_mode: {self.reward_mode}")
         if self.task_mode not in ("random", "cross_hazard"):
@@ -386,9 +394,13 @@ class ContinuousHazard2DEnv(gym.Env):
     def step(
         self, action: Array
     ) -> tuple[Any, float, bool, bool, dict[str, Any]]:
-        episode_over = self.dead or (self.success and self.terminate_at_goal)
+        episode_over = (
+            self.dead
+            or (self.success and self.terminate_at_goal)
+            or self.elapsed_steps >= self.config.max_episode_steps
+        )
         if episode_over:
-            raise RuntimeError("step() called after termination; call reset() first")
+            raise RuntimeError("step() called after episode end; call reset() first")
 
         action = np.asarray(action, dtype=self._dtype)
         if action.shape != (2,) or not np.all(np.isfinite(action)):

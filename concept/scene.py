@@ -4,8 +4,8 @@ from __future__ import annotations
 
 import numpy as np
 
-from envs import ToyEnvConfig, ToyHazardEnv, l2, obstacle_avoiding_goal_action
-from fig_shared import chord_hits_hazard
+from .envs import ToyEnvConfig, ToyHazardEnv, l2, obstacle_avoiding_goal_action
+from .fig_shared import chord_hits_hazard
 
 GAMMA = 0.97
 K = 28

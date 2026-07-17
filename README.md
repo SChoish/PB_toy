@@ -35,13 +35,15 @@ python -m hazard_env.agents.train --agent bc --steps 5000
 
 Eval tasks: `env.reset(options={"task_id": 1})` … `5` (easy → hard).
 
+The environment rejects invalid physical configurations and follows the Gymnasium
+episode lifecycle: call `reset()` after either `terminated` or `truncated` becomes true.
+
 ## Concept figure
 
 ```bash
-cd concept
-python codes_numerical.py   # → outputs/pathbridger_concept_numerical.png
-python codes_nn.py          # → outputs/pathbridger_concept_nn.png
-python codes.py             # both
+python -m concept.codes_numerical   # → concept/outputs/pathbridger_concept_numerical.png
+python -m concept.codes_nn          # → concept/outputs/pathbridger_concept_nn.png
+python -m concept.codes             # both
 ```
 
 | 요소 | 의미 |

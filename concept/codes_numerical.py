@@ -10,16 +10,16 @@ import shutil
 
 import numpy as np
 
-from envs import generate_dataset, l2
-from fig_shared import (
+from .envs import generate_dataset, l2
+from .fig_shared import (
     chord_hits_hazard,
     compose_ref_style_bridge,
     gradient_ascent_path,
     plot_concept,
     print_checks,
 )
-from paths import OUTPUT_DIR
-from scene import (
+from .paths import OUTPUT_DIR
+from .scene import (
     H_A_FRAC,
     K,
     build_crossing_scene,
