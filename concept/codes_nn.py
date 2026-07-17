@@ -13,8 +13,8 @@ from __future__ import annotations
 
 import numpy as np
 
-from envs import generate_dataset, l2
-from fig_shared import (
+from .envs import generate_dataset, l2
+from .fig_shared import (
     bridge_schedules,
     chord_hits_hazard,
     compose_ref_style_bridge,
@@ -25,8 +25,8 @@ from fig_shared import (
     print_checks,
     push_out_of_hazard,
 )
-from paths import OUTPUT_DIR
-from scene import (
+from .paths import OUTPUT_DIR
+from .scene import (
     H_A_FRAC,
     build_crossing_scene,
     make_env,

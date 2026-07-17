@@ -7,7 +7,7 @@ import matplotlib.pyplot as plt
 from matplotlib.patches import Circle
 from matplotlib.colors import LinearSegmentedColormap
 
-from envs import ToyHazardEnv, l2
+from .envs import ToyHazardEnv, l2
 
 CMAP = LinearSegmentedColormap.from_list(
     "value_field",
@@ -171,9 +171,20 @@ def gradient_ascent_path(
     return np.asarray(path)
 
 
-def chord_hits_hazard(s_t, z, env, n=48):
-    pts = np.linspace(np.asarray(s_t, float), np.asarray(z, float), n)
-    return float(np.linalg.norm(pts - env.hazard_center, axis=1).min()) < float(env.hazard_radius)
+def chord_hits_hazard(s_t, z, env):
+    """Return whether the closed line segment intersects the hazard disk."""
+    start = np.asarray(s_t, dtype=float)
+    end = np.asarray(z, dtype=float)
+    delta = end - start
+    squared_length = float(delta @ delta)
+    if squared_length == 0.0:
+        closest = start
+    else:
+        fraction = float(
+            np.clip(((np.asarray(env.hazard_center) - start) @ delta) / squared_length, 0.0, 1.0)
+        )
+        closest = start + fraction * delta
+    return float(np.linalg.norm(closest - env.hazard_center)) <= float(env.hazard_radius)
 
 
 # ------------------------------------------------------------------
