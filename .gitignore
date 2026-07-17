@@ -8,3 +8,4 @@ venv/
 .DS_Store
 *.swp
 .ipynb_checkpoints/
+hazard_env/runs/

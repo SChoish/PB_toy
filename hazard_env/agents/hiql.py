@@ -85,7 +85,7 @@ class HIQLAgent(flax.struct.PyTreeNode):
 
     def target_update(self, network):
         new_target = jax.tree_util.tree_map(
-            lambda p, tp: p * (1.0 - self.config["tau"]) + tp * self.config["tau"],
+            lambda p, tp: p * self.config["tau"] + tp * (1.0 - self.config["tau"]),
             network.params["modules_value"],
             network.params["modules_target_value"],
         )

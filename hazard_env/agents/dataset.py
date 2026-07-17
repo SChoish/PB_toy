@@ -1,4 +1,4 @@
-"""Navigate-dataset loader with simple geometric goal relabeling."""
+"""Navigate-dataset loader with geometric goal / path relabeling."""
 
 from __future__ import annotations
 
@@ -37,13 +37,19 @@ class TransitionDataset:
     rewards: np.ndarray
     masks: np.ndarray
     future_observations: np.ndarray
+    path_observations: np.ndarray  # (N, K+1, D) true bridge supervision path
 
     def __len__(self) -> int:
         return int(self.observations.shape[0])
 
+    @property
+    def horizon(self) -> int:
+        return int(self.path_observations.shape[1] - 1)
+
     def sample(self, rng: np.random.Generator, batch_size: int) -> dict[str, np.ndarray]:
         idx = rng.integers(0, len(self), size=batch_size)
         goals = self.future_observations[idx]
+        paths = self.path_observations[idx]
         next_xy = self.next_observations[idx, :2]
         goal_xy = goals[:, :2]
         success = (np.linalg.norm(next_xy - goal_xy, axis=-1) <= 0.08).astype(np.float32)
@@ -60,8 +66,9 @@ class TransitionDataset:
             "value_goals": goals,
             "low_actor_goals": goals,
             "high_actor_goals": goals,
-            "high_actor_targets": self.future_observations[idx],
-            "subgoals": self.future_observations[idx],
+            "high_actor_targets": paths[:, -1],
+            "subgoals": paths[:, -1],
+            "path_observations": paths,
         }
 
 
@@ -84,12 +91,13 @@ def load_navigate_dataset(
     goal_relabel_prob: float = 0.8,
     seed: int = 0,
 ) -> TransitionDataset:
-    """Load OGBench-style compact navigate npz into transitions."""
+    """Load OGBench-style compact navigate npz into transitions + K-step paths."""
     path = Path(path)
     raw = np.load(path)
     obs = np.asarray(raw["observations"], dtype=np.float32)
     actions = normalize_actions(np.asarray(raw["actions"], dtype=np.float32))
     terminals = np.asarray(raw["terminals"], dtype=bool)
+    k = int(subgoal_steps)
 
     valid = ~terminals
     valid[-1] = False
@@ -104,9 +112,9 @@ def load_navigate_dataset(
 
     rng = np.random.default_rng(seed)
     future = np.empty_like(observations)
+    paths = np.zeros((len(idxs), k + 1, obs.shape[-1]), dtype=np.float32)
     bounds = _episode_bounds(terminals)
 
-    # Optional commanded goals from collection (xy only).
     commanded: np.ndarray | None = None
     if "goals" in raw.files:
         stored = np.asarray(raw["goals"], dtype=np.float32)
@@ -121,7 +129,9 @@ def load_navigate_dataset(
         rows = np.flatnonzero(mask)
         ep_last = end - 1
         for r, t in zip(rows, idxs[mask], strict=False):
-            sub_t = min(t + subgoal_steps, ep_last)
+            for i in range(k + 1):
+                paths[r, i] = obs[min(t + i, ep_last)]
+            sub_t = min(t + k, ep_last)
             if rng.random() < goal_relabel_prob:
                 future[r] = obs[sub_t]
             elif commanded is not None:
@@ -137,4 +147,5 @@ def load_navigate_dataset(
         rewards=np.zeros(len(idxs), dtype=np.float32),
         masks=masks,
         future_observations=future.astype(np.float32),
+        path_observations=paths,
     )

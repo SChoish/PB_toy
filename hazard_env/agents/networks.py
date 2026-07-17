@@ -158,3 +158,35 @@ class FlowVelocityNet(nn.Module):
             activate_final=False,
             layer_norm=self.layer_norm,
         )(x)
+
+
+class PathResidualNet(nn.Module):
+    """Endpoint-preserving residual on the closed-form bridge mean.
+
+    Inputs:
+      anchor: absolute current state ``s_t``, shape ``(B, D)``
+      z_k: bridge endpoint, shape ``(B, D)``
+      t_norm: times ``i/K``, shape ``(B, K+1)``
+    Returns residual of shape ``(B, K+1, D)``.
+    """
+
+    hidden_dims: Sequence[int]
+    state_dim: int
+    layer_norm: bool = True
+
+    @nn.compact
+    def __call__(self, anchor, z_k, t_norm):
+        if t_norm.ndim == 1:
+            t_norm = t_norm[None, :]
+        b, t = t_norm.shape
+        anchor_b = jnp.broadcast_to(anchor[:, None, :], (b, t, anchor.shape[-1]))
+        z_b = jnp.broadcast_to(z_k[:, None, :], (b, t, z_k.shape[-1]))
+        t_b = t_norm[..., None]
+        x = jnp.concatenate([anchor_b, z_b, t_b], axis=-1)
+        x = x.reshape(b * t, -1)
+        y = MLP(
+            (*self.hidden_dims, self.state_dim),
+            activate_final=False,
+            layer_norm=self.layer_norm,
+        )(x)
+        return y.reshape(b, t, self.state_dim)

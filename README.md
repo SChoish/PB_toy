@@ -7,12 +7,13 @@ Repo: https://github.com/SChoish/PB_toy
 ```
 toy_examples/
 ├── concept/          # single-panel concept figure
-├── hazard_bridge/    # 3-panel "why the bridge matters"
 ├── hazard_env/       # ContinuousHazard2DEnv + navigate dataset + toy agents
 │   ├── env.py
 │   ├── generate_navigate.py
 │   ├── plot_tasks.py
-│   ├── agents/       # bc, hiql, pbg, pbf (simplified JAX)
+│   ├── HYPERPARAMETERS.md
+│   ├── agents/       # bc, hiql, pbg, pbf (JAX toys)
+│   ├── tests/
 │   └── datasets/
 └── refs/             # reference sketches / paper pages
 ```
@@ -29,7 +30,7 @@ python -m hazard_env.generate_navigate --num-episodes 200
 python -m hazard_env.plot_tasks
 
 # train a toy agent
-python -m hazard_env.agents.train --agent bc --steps 5000
+python -m hazard_env.agents.train --agent bc --steps 50000
 # agents: bc | hiql | pbg | pbf
 ```
 
@@ -37,6 +38,8 @@ Eval tasks: `env.reset(options={"task_id": 1})` … `5` (easy → hard).
 
 The environment rejects invalid physical configurations and follows the Gymnasium
 episode lifecycle: call `reset()` after either `terminated` or `truncated` becomes true.
+
+Hyperparameters: see [`hazard_env/HYPERPARAMETERS.md`](hazard_env/HYPERPARAMETERS.md).
 
 ## Concept figure
 
@@ -53,14 +56,6 @@ python -m concept.codes             # both
 | Blue line | value-greedy / endpoint-only (through hazard) |
 | Purple solid / dashed | bridge executed prefix / planned remainder |
 | Purple-border node | selected \(z^\star=\hat s_{t+K}\) |
-
-## Hazard-bridge 3-panel
-
-```bash
-cd hazard_bridge
-python run_experiment.py
-# → outputs/toy_pathbridger.{svg,png}
-```
 
 ## Refs
 
