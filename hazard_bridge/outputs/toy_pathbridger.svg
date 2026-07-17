@@ -1,0 +1,54 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="520" viewBox="0 0 1200 520">
+<defs>
+<pattern id="hatch" width="8" height="8" patternUnits="userSpaceOnUse" patternTransform="rotate(35)">
+  <line x1="0" y1="0" x2="0" y2="8" stroke="#b83b2e" stroke-width="2" opacity=".55"/>
+</pattern>
+<filter id="shadow"><feDropShadow dx="0" dy="2" stdDeviation="3" flood-opacity=".12"/></filter>
+</defs>
+<rect width="1200" height="520" fill="#fbfaf7"/>
+<text x="38" y="34" font-family="Arial,sans-serif" font-size="23" font-weight="700" fill="#18212b">Why the bridge matters</text>
+<text x="38" y="58" font-family="Arial,sans-serif" font-size="14" fill="#5d6873">A selected endpoint says where to go—not how to traverse unsupported space</text>
+<rect x="38" y="112" width="350" height="330" rx="6" fill="#ffffff" stroke="#cbd1d6" stroke-width="1.5" filter="url(#shadow)"/>
+<text x="38" y="96" font-family="Arial,sans-serif" font-size="16" font-weight="700" fill="#24303b">A  Offline trajectory support</text>
+<circle cx="199.0" cy="283.6" r="43.8" fill="#e76551" fill-opacity=".18" stroke="#b83b2e" stroke-width="2"/>
+<circle cx="199.0" cy="283.6" r="43.8" fill="url(#hatch)"/>
+<circle cx="283.0" cy="214.3" r="36.8" fill="#e76551" fill-opacity=".18" stroke="#b83b2e" stroke-width="2"/>
+<circle cx="283.0" cy="214.3" r="36.8" fill="url(#hatch)"/>
+<rect x="425" y="112" width="350" height="330" rx="6" fill="#ffffff" stroke="#cbd1d6" stroke-width="1.5" filter="url(#shadow)"/>
+<text x="425" y="96" font-family="Arial,sans-serif" font-size="16" font-weight="700" fill="#24303b">B  Endpoint only</text>
+<circle cx="586.0" cy="283.6" r="43.8" fill="#e76551" fill-opacity=".18" stroke="#b83b2e" stroke-width="2"/>
+<circle cx="586.0" cy="283.6" r="43.8" fill="url(#hatch)"/>
+<circle cx="670.0" cy="214.3" r="36.8" fill="#e76551" fill-opacity=".18" stroke="#b83b2e" stroke-width="2"/>
+<circle cx="670.0" cy="214.3" r="36.8" fill="url(#hatch)"/>
+<rect x="812" y="112" width="350" height="330" rx="6" fill="#ffffff" stroke="#cbd1d6" stroke-width="1.5" filter="url(#shadow)"/>
+<text x="812" y="96" font-family="Arial,sans-serif" font-size="16" font-weight="700" fill="#24303b">C  Endpoint-pinned bridge</text>
+<circle cx="973.0" cy="283.6" r="43.8" fill="#e76551" fill-opacity=".18" stroke="#b83b2e" stroke-width="2"/>
+<circle cx="973.0" cy="283.6" r="43.8" fill="url(#hatch)"/>
+<circle cx="1057.0" cy="214.3" r="36.8" fill="#e76551" fill-opacity=".18" stroke="#b83b2e" stroke-width="2"/>
+<circle cx="1057.0" cy="214.3" r="36.8" fill="url(#hatch)"/>
+<polyline points="132.4,278.0 141.4,270.6 148.5,260.6 155.9,254.6 164.6,247.4 172.3,237.0 182.3,231.4 191.4,225.2 201.0,218.8 209.1,212.0 219.6,205.2 228.8,200.6 238.5,190.4 248.0,186.0 255.4,178.9" fill="none" stroke="#25282b" stroke-width="2.1" opacity="0.28" stroke-linecap="round" stroke-linejoin="round"/>
+<polyline points="131.0,271.2 138.8,264.6 149.2,258.4 157.2,249.6 165.5,245.4 174.6,236.9 185.9,231.0 192.1,224.9 202.4,218.7 211.5,210.1 219.0,204.1 228.3,196.7 235.5,190.3 244.8,185.3 253.9,178.2" fill="none" stroke="#25282b" stroke-width="2.1" opacity="0.28" stroke-linecap="round" stroke-linejoin="round"/>
+<polyline points="106.4,292.3 114.1,285.1 122.5,277.0 131.0,271.2 138.8,264.6 149.2,258.4 157.2,249.6 165.5,245.4 174.6,236.9 185.9,231.0 192.1,224.9 202.4,218.7 211.5,210.1 219.0,204.1 228.3,196.7" fill="none" stroke="#25282b" stroke-width="2.1" opacity="0.28" stroke-linecap="round" stroke-linejoin="round"/>
+<polyline points="128.2,292.6 134.0,282.8 140.2,275.3 146.0,266.6 154.4,259.6 158.3,252.7 167.2,242.6 174.9,237.0 182.3,232.2 191.1,225.8 198.1,219.4 208.8,215.2 214.7,208.0 223.6,204.2 233.2,196.2" fill="none" stroke="#25282b" stroke-width="2.1" opacity="0.28" stroke-linecap="round" stroke-linejoin="round"/>
+<polyline points="109.8,301.8 117.9,294.1 125.7,286.8 132.4,278.0 141.4,270.6 148.5,260.6 155.9,254.6 164.6,247.4 172.3,237.0 182.3,231.4 191.4,225.2 201.0,218.8 209.1,212.0 219.6,205.2 228.8,200.6" fill="none" stroke="#25282b" stroke-width="2.1" opacity="0.28" stroke-linecap="round" stroke-linejoin="round"/>
+<polyline points="145.1,274.2 150.5,263.9 154.7,253.6 162.7,249.1 171.2,242.2 178.7,235.0 187.9,230.1 196.2,224.6 204.0,216.1 213.1,210.8 221.5,202.2 228.6,196.7 235.9,192.5 246.1,184.4 253.8,178.0" fill="none" stroke="#25282b" stroke-width="2.1" opacity="0.28" stroke-linecap="round" stroke-linejoin="round"/>
+<polyline points="131.5,290.0 137.9,283.2 144.1,274.5 148.7,264.9 155.4,256.5 161.5,248.9 168.6,244.5 177.2,237.6 185.3,231.8 192.2,226.7 201.5,218.9 208.7,213.6 218.2,208.8 224.8,203.1 234.2,196.0" fill="none" stroke="#25282b" stroke-width="2.1" opacity="0.28" stroke-linecap="round" stroke-linejoin="round"/>
+<polyline points="146.0,266.6 154.4,259.6 158.3,252.7 167.2,242.6 174.9,237.0 182.3,232.2 191.1,225.8 198.1,219.4 208.8,215.2 214.7,208.0 223.6,204.2 233.2,196.2 240.3,188.6 249.1,185.0 257.3,179.3" fill="none" stroke="#25282b" stroke-width="2.1" opacity="0.28" stroke-linecap="round" stroke-linejoin="round"/>
+<polyline points="132.4,278.0 141.4,270.6 148.5,260.6 155.9,254.6 164.6,247.4 172.3,237.0 182.3,231.4 191.4,225.2 201.0,218.8 209.1,212.0 219.6,205.2 228.8,200.6 238.5,190.4 248.0,186.0 255.4,178.9" fill="none" stroke="#25282b" stroke-width="3.5" opacity="0.88" stroke-linecap="round" stroke-linejoin="round"/>
+<polyline points="512.6,283.0 635.5,185.7" fill="none" stroke="#2d78c4" stroke-width="4.8" opacity="1.0" stroke-linecap="round" stroke-linejoin="round"/>
+<line x1="533.7" y1="248.4" x2="553.7" y2="268.4" stroke="#b83b2e" stroke-width="4.2" stroke-linecap="round"/>
+<line x1="553.7" y1="248.4" x2="533.7" y2="268.4" stroke="#b83b2e" stroke-width="4.2" stroke-linecap="round"/>
+<text x="543.7" y="242.4" text-anchor="middle" font-family="Arial,sans-serif" font-size="12" font-weight="700" fill="#b83b2e">unsafe</text>
+<polyline points="899.6,283.0 908.1,274.9 915.9,266.8 923.9,259.0 932.6,252.0 940.7,244.3 950.0,237.5 958.5,231.2" fill="none" stroke="#4f2583" stroke-width="5.6" opacity="1.0" stroke-linecap="round" stroke-linejoin="round"/>
+<polyline points="958.5,231.2 967.8,224.3 977.0,217.8 985.9,211.2 995.4,205.1 1004.0,198.1 1013.3,192.4 1022.5,185.7" fill="none" stroke="#7b52a7" stroke-width="4.2" opacity="1.0" stroke-linecap="round" stroke-linejoin="round" stroke-dasharray="7 6"/>
+<circle cx="958.5" cy="231.2" r="5.5" fill="#4f2583" stroke="#fff" stroke-width="1.6"/>
+<text x="968.5" y="223.2" font-family="Arial,sans-serif" font-size="11" fill="#4f2583">replan</text>
+<circle cx="125.6" cy="283.0" r="6.8" fill="#fff" stroke="#18212b" stroke-width="2.4"/>
+<circle cx="248.5" cy="185.7" r="7.8" fill="#fff" stroke="#6c3eb6" stroke-width="2.8"/>
+<circle cx="512.6" cy="283.0" r="6.8" fill="#fff" stroke="#18212b" stroke-width="2.4"/>
+<circle cx="635.5" cy="185.7" r="7.8" fill="#fff" stroke="#6c3eb6" stroke-width="2.8"/>
+<circle cx="899.6" cy="283.0" r="6.8" fill="#fff" stroke="#18212b" stroke-width="2.4"/>
+<circle cx="1022.5" cy="185.7" r="7.8" fill="#fff" stroke="#6c3eb6" stroke-width="2.8"/>
+<text x="600" y="478" text-anchor="middle" font-family="Arial,sans-serif" font-size="13" fill="#4b5661">same start  ●   same selected endpoint  ○</text>
+<text x="600" y="502" text-anchor="middle" font-family="Arial,sans-serif" font-size="12" fill="#4b5661">dataset collisions: 0  ·  direct path: unsafe  ·  learned pinned bridge: safe</text>
+</svg>
