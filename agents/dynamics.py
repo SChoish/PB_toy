@@ -50,7 +50,12 @@ def _subgoal_mode(config) -> SubgoalMode:
 
 
 class PathBridgerAgent(flax.struct.PyTreeNode):
-    """Toy PathBridger: subgoal proposals + transitive V pick + bridge + IDM."""
+    """Toy PathBridger: subgoal proposals + transitive V pick + bridge + IDM.
+
+    Subgoal nets (Gaussian / flow) predict displacement ``Delta = s_{t+K} - s_t``
+    (PathBridger mainline). Bridge planning also runs in the displacement frame
+    ``(z0=0, zK=Delta)`` then shifts back by ``s_t``. Value / IDM stay absolute.
+    """
 
     rng: Any
     network: Any
@@ -59,20 +64,40 @@ class PathBridgerAgent(flax.struct.PyTreeNode):
     bridge_b: Any = nonpytree_field()
     bridge_w: Any = nonpytree_field()
 
-    def _plan(self, s0, z_k, grad_params=None):
+    @staticmethod
+    def _subgoal_abs_from_raw(observations, raw_delta):
+        return jnp.asarray(observations, dtype=jnp.float32) + jnp.asarray(
+            raw_delta, dtype=jnp.float32
+        )
+
+    @staticmethod
+    def _subgoal_target_delta(observations, target_abs):
+        return jnp.asarray(target_abs, dtype=jnp.float32) - jnp.asarray(
+            observations, dtype=jnp.float32
+        )
+
+    def _plan(self, s0, z_k_abs, grad_params=None):
+        """Absolute path ``(B, K+1, D)`` via displacement-frame bridge + residual."""
         k = int(self.config["dynamics_N"])
+        s0 = jnp.asarray(s0, dtype=jnp.float32)
+        z_k_abs = jnp.asarray(z_k_abs, dtype=jnp.float32)
+        z0 = jnp.zeros_like(s0)
+        z_k = z_k_abs - s0
         t_norm = jnp.broadcast_to(
             jnp.arange(k + 1, dtype=jnp.float32)[None, :] / float(k),
             (s0.shape[0], k + 1),
         )
+        # Residual is conditioned on absolute ``s_t`` (anchor) and local ``Delta``.
         residual = self.network.select("path_residual")(
             s0, z_k, t_norm, params=grad_params
         )
-        return plan_forward_bridge(
-            s0, z_k, residual, a=self.bridge_a, b=self.bridge_b, w=self.bridge_w
+        path_local = plan_forward_bridge(
+            z0, z_k, residual, a=self.bridge_a, b=self.bridge_b, w=self.bridge_w
         )
+        return path_local + s0[:, None, :]
 
     def _flow_from_noise(self, observations, goals, z0, params=None):
+        """Euler-integrate CFM velocity; ``z0`` is noise in *displacement* frame."""
         steps = int(self.config.get("flow_steps", 8))
         x = z0
         for i in range(steps):
@@ -82,7 +107,7 @@ class PathBridgerAgent(flax.struct.PyTreeNode):
         return x
 
     def _sample_candidates(self, observations, goals, rng, *, temperature: float):
-        """Propose subgoal candidates.
+        """Propose absolute subgoal candidates (raw nets output ``Delta``).
 
         ``temperature <= 0`` returns the mean only. ``temperature > 0`` samples
         ``mean ± (std * temperature) * ε`` (Gaussian) or temperature-scaled flow
@@ -90,39 +115,49 @@ class PathBridgerAgent(flax.struct.PyTreeNode):
         and the remaining ``N-1`` are stochastic.
         """
         mode = _subgoal_mode(self.config)
-        n = int(self.config.get("subgoal_num_candidates", 1))
-        include_mean = bool(self.config.get("subgoal_include_mean", True))
+        n = int(self.config.get("subgoal_eval_num_samples", 4))
+        include_mean = bool(self.config.get("subgoal_include_mean", False))
         b, d = observations.shape
         temperature = float(temperature)
 
         if mode == "diag_gaussian":
-            mu, log_std = self.network.select("subgoal")(observations, goals)
+            mu_delta, log_std = self.network.select("subgoal")(observations, goals)
             std = jnp.exp(log_std)
+            mu_abs = self._subgoal_abs_from_raw(observations, mu_delta)
             if temperature <= 0.0:
-                return mu[:, None, :], mu
+                return mu_abs[:, None, :], mu_abs
             if include_mean and n > 1:
                 n_rand = n - 1
                 noise = jax.random.normal(rng, (b, n_rand, d))
-                sampled = mu[:, None, :] + std[:, None, :] * temperature * noise
-                return jnp.concatenate([mu[:, None, :], sampled], axis=1), mu
+                sampled_delta = (
+                    mu_delta[:, None, :] + std[:, None, :] * temperature * noise
+                )
+                sampled_abs = self._subgoal_abs_from_raw(
+                    observations[:, None, :], sampled_delta
+                )
+                return jnp.concatenate([mu_abs[:, None, :], sampled_abs], axis=1), mu_abs
             noise = jax.random.normal(rng, (b, n, d))
-            sampled = mu[:, None, :] + std[:, None, :] * temperature * noise
-            return sampled, mu
+            sampled_delta = mu_delta[:, None, :] + std[:, None, :] * temperature * noise
+            sampled_abs = self._subgoal_abs_from_raw(
+                observations[:, None, :], sampled_delta
+            )
+            return sampled_abs, mu_abs
 
-        # flow: CFM ODE from noise; zero-noise path is the mean.
+        # flow: CFM ODE from noise in Delta-space; zero-noise path is the mean Delta.
         goal_dim = int(goals.shape[-1])
         z_mean0 = jnp.zeros((b, d), dtype=jnp.float32)
-        mean = self._flow_from_noise(observations, goals, z_mean0)
+        mean_delta = self._flow_from_noise(observations, goals, z_mean0)
+        mean_abs = self._subgoal_abs_from_raw(observations, mean_delta)
         if temperature <= 0.0:
-            return mean[:, None, :], mean
+            return mean_abs[:, None, :], mean_abs
 
         parts = []
         n_rand = n - 1 if include_mean and n > 1 else n
         if include_mean and n > 1:
-            parts.append(mean[:, None, :])
+            parts.append(mean_abs[:, None, :])
         if n_rand > 0:
             z_rand = jax.random.normal(rng, (b, n_rand, d)) * temperature
-            flat = self._flow_from_noise(
+            flat_delta = self._flow_from_noise(
                 jnp.repeat(observations[:, None, :], n_rand, axis=1).reshape(
                     b * n_rand, d
                 ),
@@ -131,17 +166,27 @@ class PathBridgerAgent(flax.struct.PyTreeNode):
                 ),
                 z_rand.reshape(b * n_rand, d),
             ).reshape(b, n_rand, d)
-            parts.append(flat)
+            flat_abs = self._subgoal_abs_from_raw(
+                observations[:, None, :], flat_delta
+            )
+            parts.append(flat_abs)
         candidates = jnp.concatenate(parts, axis=1)
-        return candidates, mean
+        return candidates, mean_abs
 
-    def _subgoal_gap_weight(self, observations, target_subgoals, goals):
-        """Weight dataset targets by their frozen target-V improvement."""
+    def _subgoal_gap_weight(
+        self, observations, target_subgoals_abs, value_goals
+    ):
+        """Weight dataset targets by their frozen target-V improvement (absolute)."""
+        if int(value_goals.shape[-1]) != int(observations.shape[-1]):
+            raise ValueError(
+                "subgoal_value_goals must be full states: "
+                f"observations={observations.shape}, goals={value_goals.shape}"
+            )
         current_value = jax.nn.sigmoid(
-            self.network.select("target_value")(observations, goals)
+            self.network.select("target_value")(observations, value_goals)
         )
         target_value = jax.nn.sigmoid(
-            self.network.select("target_value")(target_subgoals, goals)
+            self.network.select("target_value")(target_subgoals_abs, value_goals)
         )
         gap = jax.lax.stop_gradient(target_value - current_value)
         gap_scale = float(self.config.get("subgoal_value_gap_scale", 3.0))
@@ -154,9 +199,10 @@ class PathBridgerAgent(flax.struct.PyTreeNode):
     def _subgoal_loss(self, batch, grad_params, rng):
         mode = _subgoal_mode(self.config)
         s0 = batch["observations"]
-        z_true = batch["path_observations"][:, -1]
+        z_true_abs = batch["path_observations"][:, -1]
+        z_true = self._subgoal_target_delta(s0, z_true_abs)
         weight, gap, current_value, target_value = self._subgoal_gap_weight(
-            s0, z_true, batch["goals"]
+            s0, z_true_abs, batch["subgoal_value_goals"]
         )
         gap_info = {
             "subgoal_gap_mean": jnp.mean(gap),
@@ -187,10 +233,16 @@ class PathBridgerAgent(flax.struct.PyTreeNode):
                 **gap_info,
             }
 
-        # Conditional flow matching (rectified): x_u=(1-u)ε+u z, v*=z-ε.
+        # Conditional flow matching (rectified) in Delta-space.
         rng, u_rng, x0_rng = jax.random.split(rng, 3)
         eps = jax.random.normal(x0_rng, z_true.shape)
-        u = jax.random.uniform(u_rng, (z_true.shape[0], 1))
+        t_min = float(self.config.get("flow_t_min", 1e-4))
+        u = jax.random.uniform(
+            u_rng,
+            (z_true.shape[0], 1),
+            minval=t_min,
+            maxval=1.0 - t_min,
+        )
         x_u = (1.0 - u) * eps + u * z_true
         target_v = z_true - eps
         pred_v = self.network.select("flow")(
@@ -269,14 +321,30 @@ class PathBridgerAgent(flax.struct.PyTreeNode):
         return self.replace(network=new_network, rng=new_rng), info
 
     @partial(jax.jit, static_argnames=("temperature",))
-    def sample_plan(self, observations, goals, seed=None, temperature=1.0):
+    def sample_plan(
+        self,
+        observations,
+        goals,
+        value_goals=None,
+        seed=None,
+        temperature=1.0,
+    ):
         """Propose a subgoal and return the bridged path ``(B, K+1, D)``."""
         if seed is None:
             seed = self.rng
+        if value_goals is None:
+            if int(goals.shape[-1]) != int(observations.shape[-1]):
+                raise ValueError(
+                    "PB evaluation requires a full-state value_goal separate "
+                    "from the task goal."
+                )
+            value_goals = goals
         candidates, _ = self._sample_candidates(
             observations, goals, seed, temperature=float(temperature)
         )
-        scores = score_transitive_ratio(self.network, observations, candidates, goals)
+        scores = score_transitive_ratio(
+            self.network, observations, candidates, value_goals
+        )
         z = pick_best_candidates(candidates, scores)
         return self._plan(observations, z)
 
@@ -292,19 +360,41 @@ class PathBridgerAgent(flax.struct.PyTreeNode):
             trajectories.shape[0], horizon, -1
         )
 
-    def sample_action_chunk(self, observations, goals, seed=None, temperature=1.0):
+    def sample_action_chunk(
+        self,
+        observations,
+        goals,
+        value_goals=None,
+        seed=None,
+        temperature=1.0,
+    ):
         """Plan once and return ``(B, h_a, A)`` via ``action_chunk_horizon`` (h_a)."""
         path = self.sample_plan(
-            observations, goals, seed=seed, temperature=temperature
+            observations,
+            goals,
+            value_goals=value_goals,
+            seed=seed,
+            temperature=temperature,
         )
         h_a = max(1, int(self.config.get("action_chunk_horizon", 1)))
         k = int(self.config.get("dynamics_N", h_a))
         horizon = min(h_a, k, int(path.shape[1]) - 1)
         return self._idm_actions_from_trajectories(path, horizon)
 
-    def sample_actions(self, observations, goals, seed=None, temperature=1.0):
+    def sample_actions(
+        self,
+        observations,
+        goals,
+        value_goals=None,
+        seed=None,
+        temperature=1.0,
+    ):
         chunk = self.sample_action_chunk(
-            observations, goals, seed=seed, temperature=temperature
+            observations,
+            goals,
+            value_goals=value_goals,
+            seed=seed,
+            temperature=temperature,
         )
         return chunk[:, 0]
 
@@ -317,9 +407,20 @@ class PathBridgerAgent(flax.struct.PyTreeNode):
         goal_dim = int(config.get("goal_dim", state_dim))
         hidden = tuple(config["hidden_dims"])
         k = int(config["dynamics_N"])
+        if k < 2:
+            raise ValueError(f"PathBridger requires dynamics_N >= 2, got {k}")
+        if k != int(config.get("subgoal_steps", k)):
+            raise ValueError(
+                "dynamics_N and subgoal_steps must match, got "
+                f"{k} and {config.get('subgoal_steps')}"
+            )
         mode = _subgoal_mode(config)
+        # Subgoal / flow condition on task goals (often 4D); V uses full state.
         ex_goals = jnp.zeros(
             (ex_observations.shape[0], goal_dim), dtype=ex_observations.dtype
+        )
+        ex_value_goals = jnp.zeros(
+            (ex_observations.shape[0], state_dim), dtype=ex_observations.dtype
         )
 
         a, b, _std = forward_bridge_coefficients(
@@ -351,8 +452,8 @@ class PathBridgerAgent(flax.struct.PyTreeNode):
                 ),
             ],
             "idm": [ex_observations, ex_observations],
-            "value": [ex_observations, ex_goals],
-            "target_value": [ex_observations, ex_goals],
+            "value": [ex_observations, ex_value_goals],
+            "target_value": [ex_observations, ex_value_goals],
         }
         if mode == "diag_gaussian":
             modules["subgoal"] = SubgoalNet(
@@ -408,8 +509,8 @@ def default_config_pbg():
         "value_loss_weight": 1.0,
         "subgoal_value_gap_scale": 3.0,
         "subgoal_value_weight_max": 100.0,
-        "subgoal_num_candidates": 1,
-        "subgoal_include_mean": True,
+        "subgoal_eval_num_samples": 4,
+        "subgoal_include_mean": False,
         "goal_dim": 4,
         # Pathbridger_flow name: env steps executed per replan (h_a).
         "action_chunk_horizon": 1,
@@ -421,9 +522,8 @@ def default_config_pbf():
     cfg.update(
         {
             "subgoal_distribution": "flow",
-            "subgoal_num_candidates": 8,
             "flow_steps": 8,
-            "flow_loss_weight": 1.0,
+            "flow_t_min": 1e-4,
         }
     )
     return cfg

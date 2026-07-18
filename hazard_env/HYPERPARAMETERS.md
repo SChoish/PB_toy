@@ -166,21 +166,24 @@ Both agents use terminal-safe compact trajectory samplers and emit one normalize
 | `progress_alpha` | `0.8` | prefix-progress `c_i=(i/K)^α` |
 | `discount` | `0.99` | geometric base target `γ^j` for V |
 | `tau` | `0.005` | target V Polyak |
-| `subgoal_loss_weight` | `1.0` | `‖ẑ(s,g) − s_{t+K}‖²` |
+| `subgoal_loss_weight` | `1.0` | displacement target `Δ=s_{t+K}−s_t` |
 | `path_loss_weight` | `1.0` | interior + first-step path MSE |
 | `idm_loss_weight` | `1.0` | `‖IDM(s,s') − a‖²` |
 | `value_loss_weight` | `1.0` | self + base + product-transitive |
 | `subgoal_value_gap_scale` | `3.0` | subgoal weight `exp(alpha·[V(z,g)−V(s,g)])`; HIQL alpha와 통일 |
 | `subgoal_value_weight_max` | `100.0` | maximum detached gap weight; HIQL cap과 통일 |
 | Subgoal loss | Gaussian **NLL** | `q(z\|s,g)=N(μ,diag(σ²))`; gap-weighted |
-| `subgoal_num_candidates` | `1` | eval: mean (include_mean) only |
-| `subgoal_include_mean` | `True` | pin μ as the single candidate |
+| `subgoal_eval_num_samples` | `4` | T=1 eval stochastic proposals |
+| `subgoal_include_mean` | `False` | match mainline eval; no pinned mean |
 
 **Value / subgoal selection (transitive):**
-- Train: `V(s,s)→1`, `V(s,s_{t+j})→γ^j`, `V(s,g) ← V̄(s,z)V̄(z,g)` on path triples.
+- Train: full-state same-trajectory tuples with `i<k<j`,
+  `V(s_i,s_i)→1`, `V(s_i,s_{i+j})→γ^j`, and
+  `V(s_i,s_j) ← V̄(s_i,s_k)V̄(s_k,s_j)`.
 - Subgoal regression/flow matching: multiply each sample by detached
   `min(exp(3·[V̄(s_{t+K},g)−V̄(s,g)]), 100)`.
-- Act (PBG): Gaussian mean endpoint 1개 → bridge → IDM.
+- Act (PBG): T=0 is the Gaussian mean diagnostic; T=1 selects the
+  transitive-ratio best of four stochastic endpoints.
 
 **Bridge (fixed schedule):**
 - `μ_i = a_i s + b_i z`, `path_i = μ_i + w_i r_θ`, `w_i=i(K−i)/K²`.
@@ -204,15 +207,16 @@ Same transitive V + bridge + IDM as PBG; endpoint proposals from **conditional f
 | `theta_total` | `1.0` | |
 | `progress_alpha` | `0.8` | |
 | `discount` / `tau` | `0.99` / `0.005` | same TRL-lite V |
-| `flow_loss_weight` | `1.0` | CFM |
 | gap scale / max weight | `3.0` / `100.0` | same detached value-gap weighting |
 | Flow loss | CFM MSE | `x_u=(1-u)ε+u z`, `‖v_θ−(z−ε)‖²` |
-| `subgoal_num_candidates` | `8` | zero-noise endpoint 1 + noisy flow endpoints 7 |
+| `subgoal_eval_num_samples` | `4` | four stochastic flow endpoints at T=1 |
+| `subgoal_include_mean` | `False` | no zero-noise endpoint in T=1 BoN |
 | `path_loss_weight` | `1.0` | |
 | `idm_loss_weight` | `1.0` | |
 | `value_loss_weight` | `1.0` | |
 
-**Inference:** flow endpoints 8개 → transitive-ratio best 선택 → bridge → `IDM(s, path_1)`.
+**Inference:** four stochastic flow endpoints → transitive-ratio best selection
+→ bridge → `IDM(s, path_1)`. T=0 remains a zero-noise diagnostic.
 
 ---
 

@@ -1,4 +1,4 @@
-"""Train / evaluate hazard-env agents on shared CarRace offline datasets."""
+"""Train / evaluate shared agents on OrbitalSwingBy offline datasets."""
 
 from __future__ import annotations
 
@@ -16,77 +16,45 @@ import numpy as np
 
 from agents import AGENTS, DEFAULT_CONFIGS
 
+from .config import black_hole_config, planet_config
 from .datasets import (
-    load_car_race_dataset,
-    load_car_race_dqc_dataset,
-    load_car_race_trl_dataset,
+    denormalize_actions,
+    load_swingby_dataset,
+    load_swingby_dqc_dataset,
+    load_swingby_trl_dataset,
 )
-from .env import GRAVITY_STRENGTHS, CarRaceConfig, CarRaceEnv, mode_config_kwargs
-from .generate_dataset import dataset_stem
+from .env import OrbitalSwingByEnv
+from .generate_dataset import ENVS, dataset_stem
 
-ENVS = tuple(GRAVITY_STRENGTHS)
-TASKS = ("navigation", "lap_2p", "lap_4p", "lap_8p")
-LAP_CHECKPOINT_COUNTS = {"lap_2p": 3, "lap_4p": 5, "lap_8p": 9}
 TASK_IDS = (1, 2, 3, 4, 5)
-
-# Fixed navigation eval suite on the safe ring (matches demo geometry).
-_R = 0.575
-NAV_EVAL_OPTIONS: dict[int, dict] = {
-    1: {"position": (_R, 0.0), "goal": (0.0, _R)},
-    2: {"position": (0.0, _R), "goal": (-_R, 0.0)},
-    3: {"position": (-_R, 0.0), "goal": (0.0, -_R)},
-    4: {"position": (0.0, -_R), "goal": (_R, 0.0)},
-    5: {"position": (_R * 0.7071, _R * 0.7071), "goal": (-_R * 0.7071, -_R * 0.7071)},
-}
-
-
-def resolve_task(task: str) -> tuple[str, int]:
-    if task == "navigation":
-        return "navigation", 8
-    if task not in LAP_CHECKPOINT_COUNTS:
-        raise ValueError(f"Unknown task={task!r}; choose from {TASKS}")
-    return "lap", LAP_CHECKPOINT_COUNTS[task]
-
-
-def lap_eval_options(task_id: int, checkpoint_count: int) -> dict:
-    """Five reproducible lap starts covering both directions."""
-    specs = (
-        (0, 1),
-        (0, -1),
-        (checkpoint_count // 2, 1),
-        (max(1, checkpoint_count // 3), -1),
-        (checkpoint_count - 1, 1),
-    )
-    start_checkpoint, direction = specs[task_id - 1]
-    return {
-        "start_checkpoint": int(start_checkpoint % checkpoint_count),
-        "direction": int(direction),
-    }
 
 
 def _make_eval_env(
     env_name: str,
-    task: str,
     *,
     render_mode: str | None = None,
     render_size: int = 256,
-) -> CarRaceEnv:
-    if env_name not in GRAVITY_STRENGTHS:
+) -> OrbitalSwingByEnv:
+    if env_name not in ENVS:
         raise ValueError(f"Unknown env_name={env_name!r}; choose from {ENVS}")
-    task_mode, checkpoint_count = resolve_task(task)
-    # Navigation matches hazard (300); lap keeps a longer budget for full rings.
-    max_episode_steps = 300 if task == "navigation" else 500
-    return CarRaceEnv(
-        config=CarRaceConfig(
-            task_mode=task_mode,  # type: ignore[arg-type]
-            checkpoint_count=checkpoint_count,
-            max_episode_steps=max_episode_steps,
-            **mode_config_kwargs(env_name),  # type: ignore[arg-type]
-        ),
+    if env_name == "swingby_blackhole":
+        config = black_hole_config(
+            task_mode="swingby",
+            max_episode_steps=650,
+            show_ballistic_prediction=False,
+        )
+    else:
+        config = planet_config(
+            task_mode="swingby",
+            max_episode_steps=650,
+            show_ballistic_prediction=False,
+        )
+    return OrbitalSwingByEnv(
+        config=config,
         observation_mode="state",
         render_mode=render_mode,
         render_size=render_size,
-        terminate_on_success=True,
+        terminate_at_goal=True,
     )
 
 
@@ -122,17 +90,12 @@ def _make_value_goal_resolver(
 
 
 def _eval_temperature(agent_name: str) -> float:
-    """Primary / render temperature for the agent family."""
     if agent_name in ("pbg", "pbf", "trl", "dqc"):
         return 1.0
     return 0.0
 
 
 def _eval_temperatures(agent_name: str) -> tuple[float, ...]:
-    """Temperatures to report at each eval checkpoint.
-
-    PathBridger runs both mean (T=0) and mean±std (T=1).
-    """
     if agent_name in ("pbg", "pbf"):
         return (0.0, 1.0)
     return (_eval_temperature(agent_name),)
@@ -146,8 +109,16 @@ def _temp_metric_prefix(temperature: float) -> str:
     return f"t{float(temperature):g}"
 
 
+def _format_eval_goal(info: dict) -> np.ndarray:
+    return np.concatenate(
+        [
+            np.asarray(info["goal"], dtype=np.float32).reshape(-1)[:2],
+            np.asarray(info["goal_velocity"], dtype=np.float32).reshape(-1)[:2],
+        ]
+    ).astype(np.float32)
+
+
 def _action_chunk_horizon(agent) -> int:
-    """Pathbridger_flow ``action_chunk_horizon`` (h_a)."""
     config = dict(getattr(agent, "config", {}) or {})
     return max(1, int(config.get("action_chunk_horizon", 1)))
 
@@ -167,7 +138,6 @@ def _select_action(
     action_chunk: np.ndarray | None,
     chunk_index: int,
 ) -> tuple[np.ndarray, np.ndarray | None, int]:
-    """Return ``(action, action_chunk, chunk_index)``; PB uses open-loop h_a chunks."""
     obs_j = jnp.asarray(observation)[None]
     goal_j = jnp.asarray(goal)[None]
     if _uses_action_chunks(agent):
@@ -221,14 +191,13 @@ def _select_action(
     )
 
 
-def _load_dataset(agent_name: str, dataset_path: pathlib.Path, task: str, config: dict):
+def _load_dataset(agent_name: str, dataset_path: pathlib.Path, config: dict):
     if agent_name == "trl":
-        return load_car_race_trl_dataset(dataset_path, config=config, task=task)  # type: ignore[arg-type]
+        return load_swingby_trl_dataset(dataset_path, config=config)
     if agent_name == "dqc":
-        return load_car_race_dqc_dataset(dataset_path, config=config, task=task)  # type: ignore[arg-type]
-    return load_car_race_dataset(
+        return load_swingby_dqc_dataset(dataset_path, config=config)
+    return load_swingby_dataset(
         dataset_path,
-        task=task,  # type: ignore[arg-type]
         path_horizon=int(config.get("subgoal_steps", 8)),
     )
 
@@ -254,7 +223,6 @@ def format_eval_metrics(metrics: dict, task_ids: list[int] | None = None) -> str
                 for tid in task_ids
             )
         else:
-            # Legacy single-temperature metrics (no t0_/t1_ prefix).
             mean = float(metrics.get("mean_success", 0.0))
             std = float(metrics.get("mean_success_std", 0.0))
             task_bits = " ".join(
@@ -265,45 +233,10 @@ def format_eval_metrics(metrics: dict, task_ids: list[int] | None = None) -> str
     return " ".join(chunks)
 
 
-# Heading jitter so the 25 eval seeds differ under fixed tasks + T=0.
-_EVAL_HEADING_NOISE = 0.2
-
-
-def _eval_reset_options(
-    task: str,
-    task_id: int,
-    checkpoint_count: int,
-    *,
-    episode_seed: int,
-) -> tuple[dict, int]:
-    """Fixed task options + seed-dependent heading noise; unique reset seed."""
-    reset_seed = int(episode_seed) * 10007 + int(task_id)
-    local_rng = np.random.default_rng(reset_seed)
-    if task == "navigation":
-        options = dict(NAV_EVAL_OPTIONS[task_id])
-        position = np.asarray(options["position"], dtype=np.float64)
-        goal = np.asarray(options["goal"], dtype=np.float64)
-        default_heading = float(
-            np.arctan2(goal[1] - position[1], goal[0] - position[0])
-        )
-    else:
-        options = lap_eval_options(task_id, checkpoint_count)
-        start_index = int(options["start_checkpoint"])
-        direction = int(options["direction"])
-        radial_angle = 2.0 * np.pi * start_index / checkpoint_count
-        default_heading = radial_angle + direction * np.pi / 2.0
-    options["heading"] = float(
-        default_heading
-        + local_rng.uniform(-_EVAL_HEADING_NOISE, _EVAL_HEADING_NOISE)
-    )
-    return options, reset_seed
-
-
 def evaluate(
     agent,
     *,
     env_name: str,
-    task: str,
     task_ids: list[int] | None = None,
     episodes_per_task: int = 25,
     seed: int = 0,
@@ -311,11 +244,8 @@ def evaluate(
     value_goal_resolver: Callable[[np.ndarray], np.ndarray] | None = None,
 ) -> dict[str, float]:
     task_ids = task_ids or list(TASK_IDS)
-    env = _make_eval_env(env_name, task)
-    _, checkpoint_count = resolve_task(task)
+    env = _make_eval_env(env_name)
     results: dict[str, float] = {}
-    # Unit e uses episode_seed = seed + e. Score s_e = mean_i success_{i,e}; report
-    # mean±std over the n unit scores (not over pooled raw episodes / 5 task means).
     task_successes = {task_id: [] for task_id in task_ids}
     task_deaths = {task_id: [] for task_id in task_ids}
     cross_success: list[float] = []
@@ -327,14 +257,11 @@ def evaluate(
             ep_success: list[float] = []
             ep_death: list[float] = []
             for task_id in task_ids:
-                options, reset_seed = _eval_reset_options(
-                    task,
-                    task_id,
-                    checkpoint_count,
-                    episode_seed=episode_seed,
+                reset_seed = episode_seed * 10007 + int(task_id)
+                ob, info = env.reset(
+                    seed=reset_seed, options={"task_id": int(task_id)}
                 )
-                ob, info = env.reset(seed=reset_seed, options=options)
-                goal = np.asarray(info["goal"], dtype=np.float32)
+                goal = _format_eval_goal(info)
                 value_goal = (
                     value_goal_resolver(goal)
                     if _uses_action_chunks(agent)
@@ -355,7 +282,9 @@ def evaluate(
                         action_chunk=action_chunk,
                         chunk_index=chunk_index,
                     )
-                    ob, _r, terminated, truncated, info = env.step(action)
+                    ob, _r, terminated, truncated, info = env.step(
+                        denormalize_actions(action)
+                    )
                     done = bool(terminated or truncated)
                 succ = float(info.get("is_success", False))
                 dead = float(info.get("dead", False))
@@ -391,7 +320,6 @@ def evaluate_suite(
     seed: int,
     agent_name: str,
     env_name: str,
-    task: str,
     task_ids: list[int] | None = None,
     num_eval_envs: int = 25,
     value_goal_resolver: Callable[[np.ndarray], np.ndarray] | None = None,
@@ -408,14 +336,12 @@ def evaluate_suite(
         ),
         "eval_temperature": float(primary),
         "eval_temperatures": [float(t) for t in temperatures],
-        # mean±std over n seeded cross-task unit scores (∑_i t_i / n_tasks).
         "eval_agg": "cross_task_unit_seeded",
     }
     for temperature in temperatures:
         metrics = evaluate(
             agent,
             env_name=env_name,
-            task=task,
             task_ids=task_ids,
             episodes_per_task=episodes_per_task,
             seed=seed,
@@ -437,7 +363,6 @@ def evaluate_suite(
                 f"task{task_id}_death_std"
             ]
         if float(temperature) == float(primary):
-            # Top-level aliases keep existing readers on the family default T.
             out["mean_success"] = metrics["mean_success"]
             out["mean_success_std"] = metrics["mean_success_std"]
             out["mean_death"] = metrics["mean_death"]
@@ -483,7 +408,6 @@ def load_checkpoint(
     checkpoint_dir: pathlib.Path,
     agent_name: str,
     dataset_path: pathlib.Path,
-    task: str,
     steps: int = 50_000,
 ):
     checkpoint_dir = pathlib.Path(checkpoint_dir)
@@ -493,7 +417,7 @@ def load_checkpoint(
     config = metadata["config"]
     if isinstance(config.get("hidden_dims"), list):
         config["hidden_dims"] = tuple(config["hidden_dims"])
-    data = _load_dataset(agent_name, dataset_path, task, config)
+    data = _load_dataset(agent_name, dataset_path, config)
     if agent_name in ("trl", "dqc"):
         example = _to_jnp(data.sample(np.random.default_rng(0), 8))
         template = AGENTS[agent_name].create(0, example, config)
@@ -504,9 +428,157 @@ def load_checkpoint(
     return flax.serialization.from_bytes(template, pack_path.read_bytes()), metadata
 
 
-# Per-agent render layout:
-#   {tag}/env/task{i}.mp4      — plain environment frames
-#   {tag}/overlay/task{i}.mp4  — value field / trajectory / subgoal composite
+def latest_checkpoint_step(checkpoint_dir: pathlib.Path | None) -> int | None:
+    if checkpoint_dir is None:
+        return None
+    checkpoint_dir = pathlib.Path(checkpoint_dir)
+    if not checkpoint_dir.is_dir():
+        return None
+    found: list[int] = []
+    for pack in checkpoint_dir.glob("step_*.msgpack"):
+        try:
+            step = int(pack.stem.split("_", 1)[1])
+        except (IndexError, ValueError):
+            continue
+        if (checkpoint_dir / f"step_{step}.json").exists():
+            found.append(step)
+    return max(found) if found else None
+
+
+def train(
+    *,
+    agent_name: str,
+    dataset_path: pathlib.Path,
+    env_name: str,
+    steps: int,
+    seed: int,
+    eval_every: int,
+    log_every: int,
+    config_overrides: dict | None = None,
+    checkpoint_dir: pathlib.Path | None = None,
+    num_eval_envs: int = 25,
+    resume: bool = True,
+) -> tuple[object, dict[str, float]]:
+    if agent_name not in AGENTS:
+        raise SystemExit(f"Unknown agent {agent_name}; choose from {list(AGENTS)}")
+    if env_name not in ENVS:
+        raise SystemExit(f"Unknown env {env_name}; choose from {list(ENVS)}")
+
+    config = DEFAULT_CONFIGS[agent_name]()
+    if config_overrides:
+        config.update(config_overrides)
+    config["goal_dim"] = 4
+
+    data = _load_dataset(agent_name, dataset_path, config)
+    value_goal_resolver = (
+        _make_value_goal_resolver(data.next_observations)
+        if agent_name in ("pbg", "pbf")
+        else None
+    )
+    print(
+        f"Loaded {agent_name} dataset size={len(data)} from {dataset_path}",
+        flush=True,
+    )
+
+    start_step = 0
+    metrics: dict[str, float] = {}
+    latest = latest_checkpoint_step(checkpoint_dir) if resume else None
+    if latest is not None and latest >= int(steps):
+        print(
+            f"[{agent_name}] checkpoint already complete at step={latest}; loading",
+            flush=True,
+        )
+        agent, meta = load_checkpoint(
+            checkpoint_dir=pathlib.Path(checkpoint_dir),
+            agent_name=agent_name,
+            dataset_path=dataset_path,
+            steps=int(latest),
+        )
+        return agent, dict(meta.get("metrics") or {})
+    if latest is not None and latest > 0:
+        print(
+            f"[{agent_name}] resuming from step={latest} → {steps}",
+            flush=True,
+        )
+        agent, meta = load_checkpoint(
+            checkpoint_dir=pathlib.Path(checkpoint_dir),
+            agent_name=agent_name,
+            dataset_path=dataset_path,
+            steps=int(latest),
+        )
+        start_step = int(latest)
+        metrics = dict(meta.get("metrics") or {})
+        config = dict(meta.get("config") or config)
+        if isinstance(config.get("hidden_dims"), list):
+            config["hidden_dims"] = tuple(config["hidden_dims"])
+    else:
+        rng_init = np.random.default_rng(seed)
+        if agent_name in ("trl", "dqc"):
+            example = _to_jnp(data.sample(rng_init, 8))
+            agent = AGENTS[agent_name].create(seed, example, config)
+        else:
+            agent = AGENTS[agent_name].create(
+                seed, data.observations[:8], data.actions[:8], config
+            )
+
+    rng = np.random.default_rng(seed + start_step)
+    t0 = time.time()
+    for step in range(start_step + 1, steps + 1):
+        batch = _to_jnp(data.sample(rng, config["batch_size"]))
+        agent, info = agent.update(batch)
+        if step % log_every == 0 or step == start_step + 1:
+            pretty = {
+                k: float(v) for k, v in info.items() if np.ndim(np.asarray(v)) == 0
+            }
+            print(f"[{agent_name}] step={step} {pretty}", flush=True)
+        if eval_every > 0 and step % eval_every == 0:
+            metrics = evaluate_suite(
+                agent,
+                seed=seed + step,
+                agent_name=agent_name,
+                env_name=env_name,
+                num_eval_envs=num_eval_envs,
+                value_goal_resolver=value_goal_resolver,
+            )
+            print(
+                f"[{agent_name}] eval@{step} {format_eval_metrics(metrics)}",
+                flush=True,
+            )
+            if checkpoint_dir is not None:
+                path = save_checkpoint(
+                    agent,
+                    output_dir=checkpoint_dir,
+                    agent_name=agent_name,
+                    steps=step,
+                    metrics=metrics,
+                )
+                print(f"[{agent_name}] checkpoint@{step} {path}", flush=True)
+
+    if not metrics or (eval_every <= 0 or steps % eval_every != 0):
+        metrics = evaluate_suite(
+            agent,
+            seed=seed + steps,
+            agent_name=agent_name,
+            env_name=env_name,
+            num_eval_envs=num_eval_envs,
+            value_goal_resolver=value_goal_resolver,
+        )
+        if checkpoint_dir is not None:
+            save_checkpoint(
+                agent,
+                output_dir=checkpoint_dir,
+                agent_name=agent_name,
+                steps=steps,
+                metrics=metrics,
+            )
+    print(
+        f"[{agent_name}] final eval {format_eval_metrics(metrics)}  "
+        f"({time.time() - t0:.1f}s)",
+        flush=True,
+    )
+    return agent, metrics
+
+
 RENDER_KINDS = ("env", "overlay")
 
 
@@ -526,14 +598,13 @@ def render_agent(
     *,
     output_dir: pathlib.Path,
     env_name: str,
-    task: str,
     task_ids: list[int] | None = None,
     seed: int = 0,
     render_size: int = 256,
     temperature: float = 0.0,
     value_goal_resolver: Callable[[np.ndarray], np.ndarray] | None = None,
 ) -> list[pathlib.Path]:
-    """Render each task once into both ``env/`` and ``overlay/`` videos."""
+    """Render each fixed eval task into ``env/`` and ``overlay/`` videos."""
     import imageio.v2 as imageio
 
     from hazard_env.utils.rendering import (
@@ -548,23 +619,19 @@ def render_agent(
     env_dir.mkdir(parents=True, exist_ok=True)
     overlay_dir.mkdir(parents=True, exist_ok=True)
     env = _make_eval_env(
-        env_name, task, render_mode="rgb_array", render_size=render_size
+        env_name, render_mode="rgb_array", render_size=render_size
     )
-    _, checkpoint_count = resolve_task(task)
     rng = np.random.default_rng(seed)
     paths: list[pathlib.Path] = []
     try:
         for task_id in task_ids:
             env_path = env_dir / f"task{task_id}.mp4"
             overlay_path = overlay_dir / f"task{task_id}.mp4"
-            if task == "navigation":
-                options = dict(NAV_EVAL_OPTIONS[task_id])
-            else:
-                options = lap_eval_options(task_id, checkpoint_count)
+            reset_seed = int(rng.integers(0, 1_000_000))
             ob, info = env.reset(
-                seed=int(rng.integers(0, 1_000_000)), options=options
+                seed=reset_seed, options={"task_id": int(task_id)}
             )
-            goal = np.asarray(info["goal"], dtype=np.float32)
+            goal = _format_eval_goal(info)
             is_pathbridger = hasattr(agent, "_sample_candidates") and hasattr(
                 agent, "_plan"
             )
@@ -577,8 +644,8 @@ def render_agent(
             subgoal_trail: list[np.ndarray] = []
             cached_value_field = None
             cached_policy_diagnostic: dict[str, np.ndarray] = {}
-            # car_race state[..., 7] is health; refresh the V(x,y|·) slice when it changes.
-            cached_health: float | None = None
+            # Refresh V(x,y|·) when fuel changes meaningfully.
+            cached_fuel: float | None = None
             fps = env.metadata["render_fps"]
             with imageio.get_writer(
                 env_path, fps=fps, codec="libx264"
@@ -612,12 +679,12 @@ def render_agent(
                     )
                     frame = env.render()
                     env_writer.append_data(frame)
-                    health = float(ob[7]) if np.asarray(ob).shape[-1] > 7 else None
+                    fuel = float(ob[4]) if np.asarray(ob).shape[-1] > 4 else None
                     refresh_field = cached_value_field is None or (
-                        health is not None
+                        fuel is not None
                         and (
-                            cached_health is None
-                            or abs(health - cached_health) > 1e-4
+                            cached_fuel is None
+                            or abs(fuel - cached_fuel) > 1e-3
                         )
                     )
                     diagnostic = collect_agent_diagnostics(
@@ -634,7 +701,7 @@ def render_agent(
                     )
                     if "value_field" in diagnostic:
                         cached_value_field = diagnostic["value_field"]
-                        cached_health = health
+                        cached_fuel = fuel
                     elif cached_value_field is not None:
                         diagnostic["value_field"] = cached_value_field
                     if is_pathbridger:
@@ -664,17 +731,19 @@ def render_agent(
                             subgoal_trail=subgoal_trail,
                         )
                     )
-                    ob, _reward, terminated, truncated, _info = env.step(action)
+                    ob, _reward, terminated, truncated, _info = env.step(
+                        denormalize_actions(action)
+                    )
                     trail.append(np.asarray(ob, dtype=np.float32).copy())
                     done = bool(terminated or truncated)
 
                 final_frame = env.render()
                 env_writer.append_data(final_frame)
-                health = float(ob[7]) if np.asarray(ob).shape[-1] > 7 else None
+                fuel = float(ob[4]) if np.asarray(ob).shape[-1] > 4 else None
                 refresh_field = cached_value_field is None or (
-                    health is not None
+                    fuel is not None
                     and (
-                        cached_health is None or abs(health - cached_health) > 1e-4
+                        cached_fuel is None or abs(fuel - cached_fuel) > 1e-3
                     )
                 )
                 final_diagnostic = collect_agent_diagnostics(
@@ -715,170 +784,10 @@ def render_agent(
     return paths
 
 
-def latest_checkpoint_step(checkpoint_dir: pathlib.Path | None) -> int | None:
-    """Largest ``step_*.msgpack`` that also has a matching JSON sidecar."""
-    if checkpoint_dir is None:
-        return None
-    checkpoint_dir = pathlib.Path(checkpoint_dir)
-    if not checkpoint_dir.is_dir():
-        return None
-    found: list[int] = []
-    for pack in checkpoint_dir.glob("step_*.msgpack"):
-        try:
-            step = int(pack.stem.split("_", 1)[1])
-        except (IndexError, ValueError):
-            continue
-        if (checkpoint_dir / f"step_{step}.json").exists():
-            found.append(step)
-    return max(found) if found else None
-
-
-def train(
-    *,
-    agent_name: str,
-    dataset_path: pathlib.Path,
-    env_name: str,
-    task: str,
-    steps: int,
-    seed: int,
-    eval_every: int,
-    log_every: int,
-    config_overrides: dict | None = None,
-    checkpoint_dir: pathlib.Path | None = None,
-    num_eval_envs: int = 25,
-    resume: bool = True,
-) -> tuple[object, dict[str, float]]:
-    if agent_name not in AGENTS:
-        raise SystemExit(f"Unknown agent {agent_name}; choose from {list(AGENTS)}")
-    if env_name not in ENVS:
-        raise SystemExit(f"Unknown env {env_name}; choose from {list(ENVS)}")
-    if task not in TASKS:
-        raise SystemExit(f"Unknown task {task}; choose from {list(TASKS)}")
-
-    config = DEFAULT_CONFIGS[agent_name]()
-    if config_overrides:
-        config.update(config_overrides)
-    config["goal_dim"] = 4
-
-    data = _load_dataset(agent_name, dataset_path, task, config)
-    value_goal_resolver = (
-        _make_value_goal_resolver(data.next_observations)
-        if agent_name in ("pbg", "pbf")
-        else None
-    )
-    print(
-        f"Loaded {agent_name} dataset size={len(data)} task={task} from {dataset_path}",
-        flush=True,
-    )
-
-    start_step = 0
-    metrics: dict[str, float] = {}
-    latest = latest_checkpoint_step(checkpoint_dir) if resume else None
-    if latest is not None and latest >= int(steps):
-        print(
-            f"[{agent_name}] checkpoint already complete at step={latest}; loading",
-            flush=True,
-        )
-        agent, meta = load_checkpoint(
-            checkpoint_dir=pathlib.Path(checkpoint_dir),
-            agent_name=agent_name,
-            dataset_path=dataset_path,
-            task=task,
-            steps=int(latest),
-        )
-        return agent, dict(meta.get("metrics") or {})
-    if latest is not None and latest > 0:
-        print(
-            f"[{agent_name}] resuming from step={latest} → {steps}",
-            flush=True,
-        )
-        agent, meta = load_checkpoint(
-            checkpoint_dir=pathlib.Path(checkpoint_dir),
-            agent_name=agent_name,
-            dataset_path=dataset_path,
-            task=task,
-            steps=int(latest),
-        )
-        start_step = int(latest)
-        metrics = dict(meta.get("metrics") or {})
-        config = dict(meta.get("config") or config)
-        if isinstance(config.get("hidden_dims"), list):
-            config["hidden_dims"] = tuple(config["hidden_dims"])
-    else:
-        rng_init = np.random.default_rng(seed)
-        if agent_name in ("trl", "dqc"):
-            example = _to_jnp(data.sample(rng_init, 8))
-            agent = AGENTS[agent_name].create(seed, example, config)
-        else:
-            agent = AGENTS[agent_name].create(
-                seed, data.observations[:8], data.actions[:8], config
-            )
-
-    rng = np.random.default_rng(seed + start_step)
-    t0 = time.time()
-    for step in range(start_step + 1, steps + 1):
-        batch = _to_jnp(data.sample(rng, config["batch_size"]))
-        agent, info = agent.update(batch)
-        if step % log_every == 0 or step == start_step + 1:
-            pretty = {
-                k: float(v) for k, v in info.items() if np.ndim(np.asarray(v)) == 0
-            }
-            print(f"[{agent_name}] step={step} {pretty}", flush=True)
-        if eval_every > 0 and step % eval_every == 0:
-            metrics = evaluate_suite(
-                agent,
-                seed=seed + step,
-                agent_name=agent_name,
-                env_name=env_name,
-                task=task,
-                num_eval_envs=num_eval_envs,
-                value_goal_resolver=value_goal_resolver,
-            )
-            print(
-                f"[{agent_name}] eval@{step} {format_eval_metrics(metrics)}",
-                flush=True,
-            )
-            if checkpoint_dir is not None:
-                path = save_checkpoint(
-                    agent,
-                    output_dir=checkpoint_dir,
-                    agent_name=agent_name,
-                    steps=step,
-                    metrics=metrics,
-                )
-                print(f"[{agent_name}] checkpoint@{step} {path}", flush=True)
-
-    if not metrics or (eval_every <= 0 or steps % eval_every != 0):
-        metrics = evaluate_suite(
-            agent,
-            seed=seed + steps,
-            agent_name=agent_name,
-            env_name=env_name,
-            task=task,
-            num_eval_envs=num_eval_envs,
-            value_goal_resolver=value_goal_resolver,
-        )
-        if checkpoint_dir is not None:
-            save_checkpoint(
-                agent,
-                output_dir=checkpoint_dir,
-                agent_name=agent_name,
-                steps=steps,
-                metrics=metrics,
-            )
-    print(
-        f"[{agent_name}] final eval {format_eval_metrics(metrics)}  "
-        f"({time.time() - t0:.1f}s)",
-        flush=True,
-    )
-    return agent, metrics
-
-
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--agent", choices=sorted(AGENTS), required=True)
-    p.add_argument("--env", choices=list(ENVS), default="car_race_plain")
-    p.add_argument("--task", choices=TASKS, default="navigation")
+    p.add_argument("--env", choices=list(ENVS), default="swingby_planet")
     p.add_argument("--dataset-size", choices=("1k", "10k", "100k"), default="100k")
     p.add_argument("--dataset", type=pathlib.Path, default=None)
     p.add_argument("--steps", type=int, default=2000)
@@ -887,7 +796,7 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--log-every", type=int, default=200)
     p.add_argument("--checkpoint-dir", type=pathlib.Path, default=None)
     p.add_argument("--render-dir", type=pathlib.Path, default=None)
-    p.add_argument("--num-eval-envs", type=int, default=25)
+    p.add_argument("--num-eval-envs", type=int, default=5)
     return p.parse_args()
 
 
@@ -898,7 +807,6 @@ def main() -> None:
         agent_name=args.agent,
         dataset_path=dataset,
         env_name=args.env,
-        task=args.task,
         steps=args.steps,
         seed=args.seed,
         eval_every=args.eval_every,
@@ -908,9 +816,7 @@ def main() -> None:
     )
     if args.render_dir is not None:
         render_config = dict(getattr(agent, "config", {}) or {})
-        render_data = _load_dataset(
-            args.agent, dataset, args.task, render_config
-        )
+        render_data = _load_dataset(args.agent, dataset, render_config)
         value_goal_resolver = (
             _make_value_goal_resolver(render_data.next_observations)
             if args.agent in ("pbg", "pbf")
@@ -920,7 +826,6 @@ def main() -> None:
             agent,
             output_dir=args.render_dir,
             env_name=args.env,
-            task=args.task,
             seed=args.seed + args.steps,
             temperature=_eval_temperature(args.agent),
             value_goal_resolver=value_goal_resolver,

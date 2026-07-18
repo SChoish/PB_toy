@@ -39,3 +39,6 @@ htmlcov/
 
 # Reference sketches / paper pages (local).
 refs/
+
+# Local training / orchestrator logs
+nohup_logs/

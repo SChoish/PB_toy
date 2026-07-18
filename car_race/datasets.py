@@ -40,6 +40,7 @@ class CarRaceDataset:
     commanded_goals: np.ndarray
     episode_ids: np.ndarray
     episode_ends: np.ndarray
+    valid_indices: np.ndarray
     path_horizon: int = 8
     goal_relabel_prob: float = 0.8
     random_goal_prob: float = 0.1
@@ -77,20 +78,41 @@ class CarRaceDataset:
     def _path(self, index: int) -> np.ndarray:
         k = self.path_horizon
         end = int(self.episode_ends[index])
+        if index + k - 1 > end:
+            raise ValueError(
+                f"path start {index} crosses episode end {end} for K={k}"
+            )
         path = np.empty(
             (k + 1, self.observations.shape[-1]), dtype=np.float32
         )
         path[0] = self.observations[index]
         for offset in range(1, k + 1):
-            transition_index = min(index + offset - 1, end)
+            transition_index = index + offset - 1
             path[offset] = self.next_observations[transition_index]
         return path
+
+    def _state_at_offset(self, index: int, offset: int) -> np.ndarray:
+        if offset == 0:
+            return self.observations[index]
+        return self.next_observations[index + offset - 1]
 
     def sample(
         self, rng: np.random.Generator, batch_size: int
     ) -> dict[str, np.ndarray]:
-        idxs = rng.integers(0, len(self), size=batch_size)
+        idxs = self.valid_indices[
+            rng.integers(0, len(self.valid_indices), size=batch_size)
+        ]
         goals = np.empty((batch_size, 4), dtype=np.float32)
+        subgoal_value_goals = np.empty(
+            (batch_size, self.observations.shape[-1]), dtype=np.float32
+        )
+        value_goals = np.empty_like(subgoal_value_goals)
+        split_states = np.empty_like(subgoal_value_goals)
+        base_states = np.empty_like(subgoal_value_goals)
+        split_offsets = np.zeros(batch_size, dtype=np.int64)
+        value_offsets = np.zeros(batch_size, dtype=np.int64)
+        base_offsets = np.zeros(batch_size, dtype=np.int64)
+        transitive_valid = np.zeros(batch_size, dtype=np.float32)
         paths = np.empty(
             (
                 batch_size,
@@ -106,11 +128,41 @@ class CarRaceDataset:
             if draw < self.random_goal_prob:
                 goal_index = self._reachable_random_index(rng, int(index))
                 goals[row] = self.next_observations[goal_index, :4]
+                subgoal_value_goals[row] = self.next_observations[goal_index]
             elif draw < self.random_goal_prob + self.goal_relabel_prob:
                 goal_index = self._future_index(rng, int(index))
                 goals[row] = self.next_observations[goal_index, :4]
+                subgoal_value_goals[row] = self.next_observations[goal_index]
             else:
                 goals[row] = self.commanded_goals[index]
+                terminal_index = int(self.episode_ends[index])
+                subgoal_value_goals[row] = self.next_observations[terminal_index]
+
+            # TRL tuple uses one strictly future same-trajectory full-state goal:
+            # i < split < j and V(i,j) = V(i,split) V(split,j).
+            value_goal_index = self._future_index(rng, int(index))
+            total_offset = int(value_goal_index - index + 1)
+            value_offsets[row] = total_offset
+            value_goals[row] = self.next_observations[value_goal_index]
+            if total_offset >= 2:
+                split_offset = int(rng.integers(1, total_offset))
+                split_offsets[row] = split_offset
+                split_states[row] = self._state_at_offset(
+                    int(index), split_offset
+                )
+                transitive_valid[row] = 1.0
+            else:
+                split_states[row] = self.observations[index]
+
+            max_base_offset = min(
+                self.path_horizon,
+                int(self.episode_ends[index] - index + 1),
+            )
+            base_offset = int(rng.integers(1, max_base_offset + 1))
+            base_offsets[row] = base_offset
+            base_states[row] = self._state_at_offset(
+                int(index), base_offset
+            )
 
         next_observations = self.next_observations[idxs]
         successes = goal_success(
@@ -120,18 +172,7 @@ class CarRaceDataset:
             (1.0 - successes)
             * (1.0 - self.terminals[idxs].astype(np.float32))
         ).astype(np.float32)
-        k = self.path_horizon
-        if k >= 2:
-            split_offsets = rng.integers(1, k, size=batch_size)
-            transitive_valid = np.ones(batch_size, dtype=np.float32)
-        else:
-            split_offsets = np.zeros(batch_size, dtype=np.int64)
-            transitive_valid = np.zeros(batch_size, dtype=np.float32)
-        rows = np.arange(batch_size)
-        split_states = paths[rows, split_offsets]
         path_goal_states = paths[:, -1]
-        base_offsets = rng.integers(0, k + 1, size=batch_size)
-        base_states = paths[rows, base_offsets]
 
         return {
             "observations": self.observations[idxs].astype(np.float32),
@@ -142,15 +183,18 @@ class CarRaceDataset:
             "masks": masks,
             "goals": goals,
             "actor_goals": goals,
-            "value_goals": goals,
-            "value_base_goals": base_states[:, :4].astype(np.float32),
+            "subgoal_value_goals": subgoal_value_goals,
+            "value_goals": value_goals,
+            "value_base_goals": base_states.astype(np.float32),
             "value_base_offsets": base_offsets.astype(np.float32),
             "trans_v_split_observations": split_states.astype(np.float32),
-            "trans_v_left_goals": split_states[:, :4].astype(np.float32),
-            "trans_v_right_goals": path_goal_states[:, :4].astype(np.float32),
+            "trans_v_left_goals": split_states.astype(np.float32),
+            "trans_v_right_goals": value_goals,
             "trans_v_valid_mask": transitive_valid,
+            "trans_v_split_offsets": split_offsets.astype(np.float32),
+            "value_offsets": value_offsets.astype(np.float32),
             # TR-HIQL low-actor conditions on full-state subgoals; HIQL truncates
-            # via goal_dim so 10D path endpoints remain compatible.
+            # via goal_dim so path endpoints remain compatible.
             "low_actor_goals": path_goal_states.astype(np.float32),
             "high_actor_goals": goals,
             "high_actor_targets": path_goal_states.astype(np.float32),
@@ -301,6 +345,14 @@ def load_car_race_dataset(
         episode_ids,
         task,
     )
+    indices = np.arange(len(observations), dtype=np.int64)
+    valid_indices = indices[
+        indices + int(path_horizon) - 1 <= episode_ends
+    ]
+    if len(valid_indices) == 0:
+        raise ValueError(
+            f"no episode contains a full K={path_horizon} path"
+        )
     return CarRaceDataset(
         observations=observations,
         actions=actions,
@@ -309,6 +361,7 @@ def load_car_race_dataset(
         commanded_goals=goals,
         episode_ids=episode_ids,
         episode_ends=episode_ends,
+        valid_indices=valid_indices,
         path_horizon=int(path_horizon),
         goal_relabel_prob=float(goal_relabel_prob),
         random_goal_prob=float(random_goal_prob),

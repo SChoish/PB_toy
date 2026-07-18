@@ -101,6 +101,7 @@ def collect_agent_diagnostics(
     goal: np.ndarray,
     *,
     seed: jax.Array,
+    value_goal: np.ndarray | None = None,
     grid_size: int = 48,
     compute_value_field: bool = True,
     compute_policy_diagnostics: bool = True,
@@ -110,6 +111,12 @@ def collect_agent_diagnostics(
     diagnostics: dict[str, np.ndarray] = {}
     observation = np.asarray(observation, dtype=np.float32).reshape(-1)
     goal = np.asarray(goal, dtype=np.float32).reshape(-1)
+    is_pathbridger = hasattr(agent, "_sample_candidates") and hasattr(
+        agent, "_plan"
+    )
+    if value_goal is None:
+        value_goal = goal
+    value_goal = np.asarray(value_goal, dtype=np.float32).reshape(-1)
     if compute_value_field:
         # Condition on current non-xy features when the state carries them
         # (car_race health/heading/...). Hazard 4D keeps the zero-velocity slice.
@@ -117,7 +124,7 @@ def collect_agent_diagnostics(
         condition = observation if state_dim > 4 else None
         field = _value_field(
             agent,
-            goal,
+            value_goal if is_pathbridger else goal,
             grid_size,
             state_dim=state_dim,
             condition_state=condition,
@@ -130,15 +137,16 @@ def collect_agent_diagnostics(
 
     obs_j = jnp.asarray(observation, dtype=jnp.float32)[None]
     goal_j = jnp.asarray(goal, dtype=jnp.float32)[None]
+    value_goal_j = jnp.asarray(value_goal, dtype=jnp.float32)[None]
     config = dict(agent.config)
     # Prefer method presence over config keys: sweeps may inject horizons
     # (e.g. dynamics_N) into non-PathBridger agents.
-    if hasattr(agent, "_sample_candidates") and hasattr(agent, "_plan"):
+    if is_pathbridger:
         candidates, _ = agent._sample_candidates(
             obs_j, goal_j, seed, temperature=float(temperature)
         )
         scores = score_transitive_ratio(
-            agent.network, obs_j, candidates, goal_j
+            agent.network, obs_j, candidates, value_goal_j
         )
         selected = pick_best_candidates(candidates, scores)
         planned = agent._plan(obs_j, selected)

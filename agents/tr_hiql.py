@@ -75,6 +75,7 @@ class TRHIQLAgent(flax.struct.PyTreeNode):
                 batch,
                 params,
                 discount=float(self.config.get("discount", 0.99)),
+                goal_dim=int(self.config.get("goal_dim", 4)),
             )
             low_loss, low_info = self.low_actor_loss(batch, params)
             high_loss, high_info = self.high_actor_loss(batch, params)

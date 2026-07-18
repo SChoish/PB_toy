@@ -6,6 +6,7 @@ import argparse
 import json
 import pathlib
 import time
+from collections.abc import Callable
 
 import flax.serialization
 import jax
@@ -69,6 +70,39 @@ def _to_jnp(batch: dict) -> dict:
     return {k: jnp.asarray(v) for k, v in batch.items()}
 
 
+def _make_value_goal_resolver(
+    states: np.ndarray,
+) -> Callable[[np.ndarray], np.ndarray]:
+    """Resolve a 4-D task goal to a real full state from offline support."""
+    states = np.asarray(states, dtype=np.float32)
+    scale = np.maximum(np.std(states, axis=0), 1e-3)
+    cache: dict[bytes, np.ndarray] = {}
+
+    def resolve(goal: np.ndarray) -> np.ndarray:
+        full_goal = np.asarray(goal, dtype=np.float32).reshape(-1)
+        if full_goal.shape[0] != states.shape[1]:
+            raise ValueError(
+                f"expected {states.shape[1]}-D task goal, got {full_goal.shape}"
+            )
+        key = full_goal.tobytes()
+        if key not in cache:
+            distance = np.sum(((states - full_goal) / scale) ** 2, axis=1)
+            cache[key] = states[int(np.argmin(distance))].copy()
+        return cache[key]
+
+    return resolve
+
+
+def _load_value_goal_support(path: pathlib.Path) -> np.ndarray:
+    raw = np.load(path)
+    observations = np.asarray(raw["observations"], dtype=np.float32)
+    if observations.ndim != 2:
+        raise ValueError(
+            f"offline observations must be rank 2, got {observations.shape}"
+        )
+    return observations
+
+
 def _format_eval_goal(info_goal: np.ndarray, state_dim: int) -> np.ndarray:
     """Eval goals are full states with commanded xy and zero velocity."""
     xy = np.asarray(info_goal, dtype=np.float32).reshape(-1)[:2]
@@ -110,6 +144,7 @@ def evaluate(
     seed: int = 0,
     temperature: float = 0.0,
     env_name: str = "hazard_plain",
+    value_goal_resolver: Callable[[np.ndarray], np.ndarray] | None = None,
 ) -> dict[str, float]:
     env = _make_eval_env(env_name)
     results: dict[str, float] = {}
@@ -129,23 +164,56 @@ def evaluate(
                 env, task_id=task_id, episode_seed=episode_seed
             )
             goal = _format_eval_goal(info["goal"], ob.shape[-1])
+            is_pathbridger = hasattr(agent, "_sample_candidates")
+            if is_pathbridger and value_goal_resolver is None:
+                raise ValueError(
+                    "PathBridger evaluation requires a full-state value-goal resolver"
+                )
+            value_goal = (
+                value_goal_resolver(goal)
+                if is_pathbridger and value_goal_resolver is not None
+                else None
+            )
             done = False
             while not done:
                 obs_j = jnp.asarray(ob)[None]
                 goal_j = jnp.asarray(goal)[None]
+                value_goal_j = (
+                    jnp.asarray(value_goal)[None]
+                    if value_goal is not None
+                    else None
+                )
                 if temperature == 0.0:
-                    action = np.asarray(
-                        agent.sample_actions(
+                    if is_pathbridger:
+                        action = np.asarray(
+                            agent.sample_actions(
+                                obs_j,
+                                goal_j,
+                                value_goals=value_goal_j,
+                                seed=None,
+                                temperature=0.0,
+                            )
+                        )[0]
+                    else:
+                        action = np.asarray(agent.sample_actions(
                             obs_j, goal_j, seed=None, temperature=0.0
-                        )
-                    )[0]
+                        ))[0]
                 else:
                     key = jax.random.PRNGKey(int(action_rng.integers(0, 2**31 - 1)))
-                    action = np.asarray(
-                        agent.sample_actions(
+                    if is_pathbridger:
+                        action = np.asarray(
+                            agent.sample_actions(
+                                obs_j,
+                                goal_j,
+                                value_goals=value_goal_j,
+                                seed=key,
+                                temperature=temperature,
+                            )
+                        )[0]
+                    else:
+                        action = np.asarray(agent.sample_actions(
                             obs_j, goal_j, seed=key, temperature=temperature
-                        )
-                    )[0]
+                        ))[0]
                 action = denormalize_actions(action)
                 ob, _r, terminated, truncated, info = env.step(action)
                 done = bool(terminated or truncated)
@@ -182,20 +250,44 @@ def _eval_temperature(agent_name: str) -> float:
     return 0.0
 
 
+def _eval_temperatures(agent_name: str) -> tuple[float, ...]:
+    if agent_name in ("pbg", "pbf"):
+        return (0.0, 1.0)
+    return (_eval_temperature(agent_name),)
+
+
+def _temp_metric_prefix(temperature: float) -> str:
+    return "t0" if float(temperature) == 0.0 else "t1"
+
+
 def format_eval_metrics(metrics: dict, task_ids: list[int] | None = None) -> str:
     """Compact eval line: per-task means + mean±std over 25 cross-task averages."""
     task_ids = task_ids or [1, 2, 3, 4, 5]
     parts = [
-        f"n={int(metrics.get('episodes_per_task', metrics.get('num_eval_envs', 0)))}",
-        f"T={float(metrics.get('eval_temperature', 0.0)):g}",
-        (
-            f"success={float(metrics.get('mean_success', 0.0)):.2f}"
-            f"±{float(metrics.get('mean_success_std', 0.0)):.2f}"
-        ),
+        f"n={int(metrics.get('episodes_per_task', metrics.get('num_eval_envs', 0)))}"
     ]
-    for task_id in task_ids:
-        mean = float(metrics.get(f"task{task_id}_success", 0.0))
-        parts.append(f"t{task_id}={mean:.2f}")
+    temperatures = metrics.get(
+        "eval_temperatures",
+        [float(metrics.get("eval_temperature", 0.0))],
+    )
+    for temperature in temperatures:
+        prefix = _temp_metric_prefix(float(temperature))
+        mean = float(
+            metrics.get(f"{prefix}_mean_success", metrics.get("mean_success", 0.0))
+        )
+        std = float(
+            metrics.get(
+                f"{prefix}_mean_success_std",
+                metrics.get("mean_success_std", 0.0),
+            )
+        )
+        task_bits = " ".join(
+            f"t{task_id}={float(metrics.get(f'{prefix}_task{task_id}_success', metrics.get(f'task{task_id}_success', 0.0))):.2f}"
+            for task_id in task_ids
+        )
+        parts.append(
+            f"T={float(temperature):g} success={mean:.2f}±{std:.2f} {task_bits}"
+        )
     return " ".join(parts)
 
 
@@ -207,6 +299,7 @@ def evaluate_suite(
     task_ids: list[int] | None = None,
     num_eval_envs: int = 25,
     env_name: str = "hazard_plain",
+    value_goal_resolver: Callable[[np.ndarray], np.ndarray] | None = None,
 ) -> dict[str, float]:
     """Evaluate with the agent-family temperature (BC/HIQL: 0, PBG/PBF: 1).
 
@@ -217,32 +310,51 @@ def evaluate_suite(
     """
     task_ids = task_ids or [1, 2, 3, 4, 5]
     episodes_per_task = max(1, int(num_eval_envs))
-    temperature = _eval_temperature(agent_name)
-    metrics = evaluate(
-        agent,
-        task_ids=task_ids,
-        episodes_per_task=episodes_per_task,
-        seed=seed,
-        temperature=temperature,
-        env_name=env_name,
-    )
-    out: dict[str, float | int | str] = {
+    temperatures = _eval_temperatures(agent_name)
+    primary = _eval_temperature(agent_name)
+    out: dict[str, float | int | str | list[float]] = {
         "num_eval_envs": episodes_per_task,
         "episodes_per_task": episodes_per_task,
-        "total_eval_episodes": episodes_per_task * len(task_ids),
-        "eval_temperature": temperature,
+        "total_eval_episodes": (
+            episodes_per_task * len(task_ids) * len(temperatures)
+        ),
+        "eval_temperature": primary,
+        "eval_temperatures": [float(t) for t in temperatures],
         # mean±std over n seeded cross-task unit scores (∑_i t_i / n_tasks).
         "eval_agg": "cross_task_unit_seeded",
-        "mean_success": metrics["mean_success"],
-        "mean_success_std": metrics["mean_success_std"],
-        "mean_death": metrics["mean_death"],
-        "mean_death_std": metrics["mean_death_std"],
     }
-    for task_id in task_ids:
-        out[f"task{task_id}_success"] = metrics[f"task{task_id}_success"]
-        out[f"task{task_id}_success_std"] = metrics[f"task{task_id}_success_std"]
-        out[f"task{task_id}_death"] = metrics[f"task{task_id}_death"]
-        out[f"task{task_id}_death_std"] = metrics[f"task{task_id}_death_std"]
+    for temperature in temperatures:
+        metrics = evaluate(
+            agent,
+            task_ids=task_ids,
+            episodes_per_task=episodes_per_task,
+            seed=seed,
+            temperature=temperature,
+            env_name=env_name,
+            value_goal_resolver=value_goal_resolver,
+        )
+        prefix = _temp_metric_prefix(temperature)
+        for key in (
+            "mean_success",
+            "mean_success_std",
+            "mean_death",
+            "mean_death_std",
+        ):
+            out[f"{prefix}_{key}"] = metrics[key]
+        for task_id in task_ids:
+            for suffix in (
+                "success",
+                "success_std",
+                "death",
+                "death_std",
+            ):
+                out[f"{prefix}_task{task_id}_{suffix}"] = metrics[
+                    f"task{task_id}_{suffix}"
+                ]
+        if float(temperature) == float(primary):
+            for key, value in metrics.items():
+                if key != "eval_temperature":
+                    out[key] = value
     return out
 
 
@@ -321,6 +433,7 @@ def render_agent(
     temperature: float = 0.0,
     env_name: str = "hazard_plain",
     diagnostics: bool = True,
+    value_goal_resolver: Callable[[np.ndarray], np.ndarray] | None = None,
 ) -> list[pathlib.Path]:
     """Render evaluation episodes, optionally with model diagnostic overlays."""
     import imageio.v2 as imageio
@@ -337,6 +450,14 @@ def render_agent(
                 options={"task_id": task_id},
             )
             goal = _format_eval_goal(info["goal"], ob.shape[-1])
+            is_pathbridger = hasattr(agent, "_sample_candidates")
+            if is_pathbridger and value_goal_resolver is None:
+                raise ValueError(
+                    "PathBridger rendering requires a full-state value-goal resolver"
+                )
+            value_goal = (
+                value_goal_resolver(goal) if is_pathbridger else None
+            )
             trail = [np.asarray(ob, dtype=np.float32).copy()]
             subgoal_trail: list[np.ndarray] = []
             cached_value_field = None
@@ -347,24 +468,42 @@ def render_agent(
                 while not done:
                     if temperature == 0.0:
                         key = agent.rng
-                        action = np.asarray(
-                            agent.sample_actions(
+                        if is_pathbridger:
+                            action = np.asarray(
+                                agent.sample_actions(
+                                    jnp.asarray(ob)[None],
+                                    jnp.asarray(goal)[None],
+                                    value_goals=jnp.asarray(value_goal)[None],
+                                    seed=None,
+                                    temperature=0.0,
+                                )
+                            )[0]
+                        else:
+                            action = np.asarray(agent.sample_actions(
                                 jnp.asarray(ob)[None],
                                 jnp.asarray(goal)[None],
                                 seed=None,
                                 temperature=0.0,
-                            )
-                        )[0]
+                            ))[0]
                     else:
                         key = jax.random.PRNGKey(int(rng.integers(0, 1_000_000)))
-                        action = np.asarray(
-                            agent.sample_actions(
+                        if is_pathbridger:
+                            action = np.asarray(
+                                agent.sample_actions(
+                                    jnp.asarray(ob)[None],
+                                    jnp.asarray(goal)[None],
+                                    value_goals=jnp.asarray(value_goal)[None],
+                                    seed=key,
+                                    temperature=temperature,
+                                )
+                            )[0]
+                        else:
+                            action = np.asarray(agent.sample_actions(
                                 jnp.asarray(ob)[None],
                                 jnp.asarray(goal)[None],
                                 seed=key,
                                 temperature=temperature,
-                            )
-                        )[0]
+                            ))[0]
 
                     frame = env.render()
                     if diagnostics:
@@ -373,6 +512,7 @@ def render_agent(
                             ob,
                             goal,
                             seed=key,
+                            value_goal=value_goal,
                             compute_value_field=cached_value_field is None,
                             temperature=temperature,
                         )
@@ -407,6 +547,7 @@ def render_agent(
                         ob,
                         goal,
                         seed=key,
+                        value_goal=value_goal,
                         compute_value_field=False,
                         temperature=temperature,
                     )
@@ -470,6 +611,11 @@ def train(
             seed=seed,
         )
         print(f"Loaded {len(data)} transitions from {dataset_path}")
+    value_goal_resolver = (
+        _make_value_goal_resolver(_load_value_goal_support(dataset_path))
+        if agent_name in ("pbg", "pbf")
+        else None
+    )
 
     rng = np.random.default_rng(seed)
     if agent_name in ("trl", "dqc"):
@@ -497,6 +643,7 @@ def train(
                 agent_name=agent_name,
                 num_eval_envs=num_eval_envs,
                 env_name=env_name,
+                value_goal_resolver=value_goal_resolver,
             )
             print(f"[{agent_name}] eval@{step} {format_eval_metrics(metrics)}")
             if checkpoint_dir is not None:
@@ -516,6 +663,7 @@ def train(
             agent_name=agent_name,
             num_eval_envs=num_eval_envs,
             env_name=env_name,
+            value_goal_resolver=value_goal_resolver,
         )
         if checkpoint_dir is not None:
             save_checkpoint(
@@ -586,6 +734,11 @@ def main() -> None:
         env_name=args.env,
     )
     if args.render_dir is not None:
+        value_goal_resolver = None
+        if args.agent in ("pbg", "pbf"):
+            value_goal_resolver = _make_value_goal_resolver(
+                _load_value_goal_support(dataset)
+            )
         paths = render_agent(
             agent,
             output_dir=args.render_dir,
@@ -593,6 +746,7 @@ def main() -> None:
             seed=args.seed + args.steps,
             temperature=_eval_temperature(args.agent),
             env_name=args.env,
+            value_goal_resolver=value_goal_resolver,
         )
         print(f"Rendered {len(paths)} videos to {args.render_dir}")
 

@@ -37,6 +37,7 @@ class TransitionDataset:
     rewards: np.ndarray
     masks: np.ndarray
     future_observations: np.ndarray
+    future_value_observations: np.ndarray
     path_observations: np.ndarray  # (N, K+1, D) true bridge supervision path
 
     def __len__(self) -> int:
@@ -50,6 +51,7 @@ class TransitionDataset:
         idx = rng.integers(0, len(self), size=batch_size)
         paths = self.path_observations[idx]
         goals = self.future_observations[idx]
+        subgoal_value_goals = self.future_value_observations[idx]
         next_xy = self.next_observations[idx, :2]
         goal_xy = goals[:, :2]
         success = (np.linalg.norm(next_xy - goal_xy, axis=-1) <= 0.08).astype(np.float32)
@@ -65,7 +67,7 @@ class TransitionDataset:
         ar = np.arange(batch_size)
         split_obs = paths[ar, split_idx]
         value_goals = paths[ar, -1]
-        base_idx = rng.integers(0, k + 1, size=batch_size)
+        base_idx = rng.integers(1, k + 1, size=batch_size)
         base_goals = paths[ar, base_idx]
 
         return {
@@ -77,6 +79,7 @@ class TransitionDataset:
             "masks": masks.astype(np.float32),
             "goals": goals.astype(np.float32),
             "actor_goals": goals.astype(np.float32),
+            "subgoal_value_goals": subgoal_value_goals.astype(np.float32),
             "value_goals": value_goals.astype(np.float32),
             "value_base_goals": base_goals.astype(np.float32),
             "value_base_offsets": base_idx.astype(np.float32),
@@ -84,6 +87,8 @@ class TransitionDataset:
             "trans_v_left_goals": split_obs.astype(np.float32),
             "trans_v_right_goals": value_goals.astype(np.float32),
             "trans_v_valid_mask": tri_valid,
+            "trans_v_split_offsets": split_idx.astype(np.float32),
+            "value_offsets": np.full(batch_size, k, dtype=np.float32),
             "low_actor_goals": goals.astype(np.float32),
             "high_actor_goals": goals.astype(np.float32),
             "high_actor_targets": paths[:, -1],
@@ -119,9 +124,15 @@ def load_navigate_dataset(
     terminals = np.asarray(raw["terminals"], dtype=bool)
     k = int(subgoal_steps)
 
-    valid = ~terminals
-    valid[-1] = False
-    idxs = np.flatnonzero(valid)
+    bounds = _episode_bounds(terminals)
+    valid_parts = [
+        np.arange(start, end - k, dtype=np.int64)
+        for start, end in bounds
+        if end - k > start
+    ]
+    if not valid_parts:
+        raise ValueError(f"no episode contains a full K={k} path")
+    idxs = np.concatenate(valid_parts)
     next_idxs = idxs + 1
 
     observations = obs[idxs]
@@ -132,9 +143,8 @@ def load_navigate_dataset(
 
     rng = np.random.default_rng(seed)
     future = np.empty_like(observations)
+    future_value = np.empty_like(observations)
     paths = np.zeros((len(idxs), k + 1, obs.shape[-1]), dtype=np.float32)
-    bounds = _episode_bounds(terminals)
-
     commanded: np.ndarray | None = None
     if "goals" in raw.files:
         stored = np.asarray(raw["goals"], dtype=np.float32)
@@ -150,14 +160,33 @@ def load_navigate_dataset(
         ep_last = end - 1
         for r, t in zip(rows, idxs[mask], strict=False):
             for i in range(k + 1):
-                paths[r, i] = obs[min(t + i, ep_last)]
-            sub_t = min(t + k, ep_last)
+                paths[r, i] = obs[t + i]
+            sub_t = t + k
             if rng.random() < goal_relabel_prob:
                 future[r] = obs[sub_t]
+                future_value[r] = obs[sub_t]
             elif commanded is not None:
+                # Commanded goals specify xy only. Resolve them to a real
+                # observation from this episode instead of inventing a
+                # zero-velocity "full" state.
+                episode_states = obs[start:end]
+                nearest = int(
+                    np.argmin(
+                        np.sum(
+                            (
+                                episode_states[:, :2]
+                                - commanded[r, :2][None, :]
+                            )
+                            ** 2,
+                            axis=1,
+                        )
+                    )
+                )
                 future[r] = commanded[r]
+                future_value[r] = episode_states[nearest]
             else:
                 future[r] = obs[ep_last]
+                future_value[r] = obs[ep_last]
 
     return TransitionDataset(
         observations=observations,
@@ -167,6 +196,7 @@ def load_navigate_dataset(
         rewards=np.zeros(len(idxs), dtype=np.float32),
         masks=masks,
         future_observations=future.astype(np.float32),
+        future_value_observations=future_value.astype(np.float32),
         path_observations=paths,
     )
 

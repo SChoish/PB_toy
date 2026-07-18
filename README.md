@@ -38,8 +38,9 @@ Requires Python 3.10–3.12. Without an editable install, set
 | `trl` / `dqc` | trajectory / action-chunk critics |
 | `pbg` / `pbf` | PathBridger (Gaussian / flow subgoal) |
 
-PathBridger eval reports **T=0 (mean)** and **T=1 (mean ± std)**. Other families
-use their default temperature (BC/HIQL: 0, TRL/DQC: 1).
+PathBridger eval reports **T=0** (Gaussian mean / flow zero-noise diagnostic)
+and **T=1** (transitive-value best of four stochastic endpoints, with no pinned
+mean). Other families use their default temperature (BC/HIQL: 0, TRL/DQC: 1).
 
 Defaults: [`hazard_env/HYPERPARAMETERS.md`](hazard_env/HYPERPARAMETERS.md).
 

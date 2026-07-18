@@ -45,7 +45,7 @@ CORNERING_GRIPS: dict[CarRaceMode, float] = {
     "car_race_plain": 1.0,
     "car_race_grav": 1.0,
     "car_race_anti_grav": 1.0,
-    "car_race_ice": 0.20,
+    "car_race_ice": 0.15,
 }
 
 # Longitudinal tire force controls both acceleration and braking. Ice needs a
@@ -54,7 +54,7 @@ LONGITUDINAL_GRIPS: dict[CarRaceMode, float] = {
     "car_race_plain": 1.0,
     "car_race_grav": 1.0,
     "car_race_anti_grav": 1.0,
-    "car_race_ice": 0.53,
+    "car_race_ice": 0.45,
 }
 
 # Chassis yaw response is reduced separately from momentum retention. This
@@ -63,7 +63,7 @@ STEERING_RESPONSES: dict[CarRaceMode, float] = {
     "car_race_plain": 1.0,
     "car_race_grav": 1.0,
     "car_race_anti_grav": 1.0,
-    "car_race_ice": 0.55,
+    "car_race_ice": 0.465,
 }
 
 # Ice retains the lateral momentum longer than asphalt. In field modes this
@@ -72,14 +72,14 @@ EXTERNAL_DRAGS: dict[CarRaceMode, float] = {
     "car_race_plain": 1.2,
     "car_race_grav": 1.2,
     "car_race_anti_grav": 1.2,
-    "car_race_ice": 0.40,
+    "car_race_ice": 0.30,
 }
 
 MAX_EXTERNAL_SPEEDS: dict[CarRaceMode, float] = {
     "car_race_plain": 0.30,
     "car_race_grav": 0.30,
     "car_race_anti_grav": 0.30,
-    "car_race_ice": 0.40,
+    "car_race_ice": 0.45,
 }
 
 

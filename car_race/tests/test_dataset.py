@@ -4,6 +4,7 @@ import unittest
 
 import numpy as np
 
+from agents import DEFAULT_CONFIGS
 from car_race.datasets import (
     goal_success,
     load_car_race_dataset,
@@ -223,6 +224,44 @@ class CarRaceDatasetLoaderTest(unittest.TestCase):
         self.assertEqual(batch["rewards"].shape, (32,))
         self.assertEqual(batch["masks"].shape, (32,))
 
+    def test_pb_value_goals_are_full_and_transitive_tuple_is_consistent(self):
+        with tempfile.TemporaryDirectory() as directory:
+            dataset = load_car_race_dataset(
+                self._write_dataset(directory), task="lap_2p"
+            )
+            batch = dataset.sample(np.random.default_rng(9), 256)
+
+        self.assertEqual(batch["goals"].shape, (256, 4))
+        for key in (
+            "subgoal_value_goals",
+            "value_goals",
+            "value_base_goals",
+            "trans_v_left_goals",
+            "trans_v_right_goals",
+        ):
+            self.assertEqual(batch[key].shape, (256, 10), key)
+        np.testing.assert_array_equal(
+            batch["trans_v_right_goals"], batch["value_goals"]
+        )
+        valid = batch["trans_v_valid_mask"] > 0
+        self.assertTrue(
+            np.all(
+                batch["trans_v_split_offsets"][valid]
+                < batch["value_offsets"][valid]
+            )
+        )
+        self.assertFalse(
+            np.any(
+                np.all(
+                    np.isclose(
+                        batch["path_observations"][:, -1],
+                        batch["path_observations"][:, -2],
+                    ),
+                    axis=1,
+                )
+            )
+        )
+
     def test_future_relabeling_preserves_direction_and_progress(self):
         with tempfile.TemporaryDirectory() as directory:
             dataset = load_car_race_dataset(
@@ -280,6 +319,12 @@ class CarRaceDatasetLoaderTest(unittest.TestCase):
             np.savez_compressed(broken, **raw)
             with self.assertRaisesRegex(ValueError, "does not end"):
                 load_car_race_dataset(broken)
+
+    def test_pb_eval_uses_four_stochastic_candidates_without_pinned_mean(self):
+        for name in ("pbg", "pbf"):
+            config = DEFAULT_CONFIGS[name]()
+            self.assertEqual(config["subgoal_eval_num_samples"], 4)
+            self.assertFalse(config["subgoal_include_mean"])
 
 
 if __name__ == "__main__":

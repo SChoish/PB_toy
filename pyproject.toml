@@ -59,6 +59,7 @@ hazard-generate = "hazard_env.generate_navigate:main"
 hazard-train = "hazard_env.train:main"
 pb-concept = "concept.codes:main"
 swingby-generate = "swingby.generate_dataset:main"
+swingby-train = "swingby.train:main"
 
 [tool.setuptools]
 include-package-data = false
