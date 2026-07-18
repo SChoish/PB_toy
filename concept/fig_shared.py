@@ -3,24 +3,8 @@
 from __future__ import annotations
 
 import numpy as np
-import matplotlib.pyplot as plt
-from matplotlib.patches import Circle
-from matplotlib.colors import LinearSegmentedColormap
 
 from .envs import ToyHazardEnv, l2
-
-CMAP = LinearSegmentedColormap.from_list(
-    "value_field",
-    [
-        "#1a4f86",
-        "#3a7eb0",
-        "#6fadc0",
-        "#a8c9a0",
-        "#d9d88a",
-        "#f0c95a",
-        "#f0a830",
-    ],
-)
 
 REPLAN_FRAC = 0.45  # h_a / K — solid executed prefix (ref.png)
 
@@ -206,11 +190,33 @@ def plot_concept(
     out_path,
     data_subgoal=None,
 ):
+    try:
+        import matplotlib.pyplot as plt
+        from matplotlib.colors import LinearSegmentedColormap
+        from matplotlib.patches import Circle
+    except ImportError as exc:
+        raise ImportError(
+            "Concept plotting requires the render dependencies; install "
+            "with `pip install -e '.[render]'`."
+        ) from exc
+
+    cmap = LinearSegmentedColormap.from_list(
+        "value_field",
+        [
+            "#1a4f86",
+            "#3a7eb0",
+            "#6fadc0",
+            "#a8c9a0",
+            "#d9d88a",
+            "#f0c95a",
+            "#f0a830",
+        ],
+    )
     X, Y = np.meshgrid(xs, ys)
     V_n = (V - V.min()) / (V.max() - V.min() + 1e-12)
 
     fig, ax = plt.subplots(figsize=(8.5, 8.5))
-    ax.contourf(X, Y, V_n, levels=100, cmap=CMAP, alpha=0.98)
+    ax.contourf(X, Y, V_n, levels=100, cmap=cmap, alpha=0.98)
 
     # Hazard (annotation only — not encoded in V)
     ax.add_patch(

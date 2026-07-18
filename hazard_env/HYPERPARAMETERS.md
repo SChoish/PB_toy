@@ -1,14 +1,15 @@
 # Agent hyperparameters
 
-Defaults live under `hazard_env/agents/` (`bc`, `hiql`, `dynamics`).
-Training: `python -m hazard_env.agents.train --agent {bc,hiql,tr_hiql,trl,dqc,pbg,pbf}`.
+Defaults live under `agents/` (`bc`, `hiql`, `dynamics`).
+Training: `python -m hazard_env.train --agent {bc,hiql,tr_hiql,trl,dqc,pbg,pbf}`.
 
 Layout (mirrors Pathbridger_flow):
 
 ```
+agents/              # environment-neutral agent implementations and model utilities
 hazard_env/
-  agents/   # bc, hiql, dynamics (PBG/PBF), critic (TRL-lite), train
-  utils/    # flax_utils, networks, dynamics (bridge), datasets
+  train.py           # Hazard2D-specific training and evaluation
+  utils/             # Hazard2D-specific datasets and rendering
 ```
 
 These are **toy reimplementations** inspired by OGBench (GCBC / HIQL) and
@@ -150,7 +151,7 @@ Both agents use terminal-safe compact trajectory samplers and emit one normalize
 
 ## PBG (PathBridger-Gaussian lite)
 
-**Files:** `agents/dynamics.py` (`subgoal_distribution=diag_gaussian`), bridge in `utils/dynamics.py`, value in `agents/critic.py`
+**Files:** `agents/dynamics.py` (`subgoal_distribution=diag_gaussian`), bridge in `agents/dynamics_utils.py`, value in `agents/critic.py`
 **Stack:** subgoal mean + **transitive sigmoid V** + closed-form bridge + path residual + IDM
 
 | Hyperparameter | Value | Meaning |
@@ -222,7 +223,7 @@ export PYTHONPATH=/path/to/toy_examples
 export XLA_PYTHON_CLIENT_PREALLOCATE=false
 export XLA_PYTHON_CLIENT_MEM_FRACTION=0.25
 
-python -m hazard_env.agents.train \
+python -m hazard_env.train \
   --agent {bc,hiql,tr_hiql,pbg,pbf} \
   --steps 10000 --eval-every 5000 --log-every 1000 --seed 0 \
   --env hazard_plain \

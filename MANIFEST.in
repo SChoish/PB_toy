@@ -1,0 +1,24 @@
+# Keep source distributions aligned with the release surface.
+prune refs
+prune .github
+prune **/checkpoints
+prune **/renders
+prune **/plots
+prune **/runs
+prune **/outputs
+prune **/datasets
+prune **/__pycache__
+prune **/.pytest_cache
+
+global-exclude **/demo.py
+global-exclude **/orbital_swingby_demo.py
+global-exclude **/run_sweep*.py
+global-exclude **/plot_*.py
+global-exclude **/reeval_*.py
+global-exclude **/rerender_*.py
+global-exclude *.npz
+global-exclude *_preview.png
+global-exclude *.log
+global-exclude *.mp4
+global-exclude *.gif
+global-exclude *.pyc

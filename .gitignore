@@ -2,16 +2,40 @@ __pycache__/
 *.py[cod]
 *.egg-info/
 .eggs/
+build/
+dist/
 .venv/
 venv/
 .env
 .DS_Store
 *.swp
 .ipynb_checkpoints/
+.pytest_cache/
+.coverage
+htmlcov/
 
-# Keep training logs tracked; ignore other run artifacts.
-hazard_env/runs/*
-!hazard_env/runs/*.log
-hazard_env/checkpoints/
-hazard_env/renders/
-hazard_env/plots/
+# ---------------------------------------------------------------------------
+# Regenerated / large artifacts (do not ship).
+# ---------------------------------------------------------------------------
+**/checkpoints/
+**/renders/
+**/plots/
+**/runs/
+**/outputs/
+**/datasets/*.npz
+**/datasets/*_preview.png
+**/datasets/*.npz.*
+
+# ---------------------------------------------------------------------------
+# Local-only ops (kept on disk for experiments; not part of the release).
+# Core surface: env / train / generate_* / datasets loaders / agents / tests.
+# ---------------------------------------------------------------------------
+**/demo.py
+**/orbital_swingby_demo.py
+**/run_sweep*.py
+**/plot_*.py
+**/reeval_*.py
+**/rerender_*.py
+
+# Reference sketches / paper pages (local).
+refs/

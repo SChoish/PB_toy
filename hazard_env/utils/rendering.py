@@ -13,7 +13,7 @@ import jax.numpy as jnp
 import numpy as np
 from PIL import Image, ImageDraw
 
-from hazard_env.agents.critic import pick_best_candidates, score_transitive_ratio
+from agents.critic import pick_best_candidates, score_transitive_ratio
 
 
 def _has_module(agent: Any, name: str) -> bool:
@@ -21,15 +21,32 @@ def _has_module(agent: Any, name: str) -> bool:
     return isinstance(modules, dict) and name in modules
 
 
-def _value_field(agent: Any, goal: np.ndarray, grid_size: int) -> np.ndarray | None:
-    """Evaluate V([x,y,0,0], goal) on a regular world-space grid."""
+def _value_field(
+    agent: Any,
+    goal: np.ndarray,
+    grid_size: int,
+    *,
+    state_dim: int,
+    condition_state: np.ndarray | None = None,
+) -> np.ndarray | None:
+    """Evaluate V on a world-space (x, y) grid.
+
+    Non-(x, y) coordinates default to 0. When ``condition_state`` is given
+    (e.g. car_race with health), those coordinates are copied from it so the
+    slice is V(x, y | o_{¬xy}, g) rather than V(x, y, 0, ...).
+    """
     xs = np.linspace(-1.0, 1.0, grid_size, dtype=np.float32)
     ys = np.linspace(1.0, -1.0, grid_size, dtype=np.float32)
     xx, yy = np.meshgrid(xs, ys)
-    states = np.zeros((grid_size * grid_size, goal.shape[-1]), dtype=np.float32)
+    states = np.zeros((grid_size * grid_size, int(state_dim)), dtype=np.float32)
+    if condition_state is not None:
+        cond = np.asarray(condition_state, dtype=np.float32).reshape(-1)
+        if cond.shape[0] == int(state_dim):
+            states[:] = cond[None, :]
     states[:, 0] = xx.reshape(-1)
     states[:, 1] = yy.reshape(-1)
-    goals = np.broadcast_to(goal, states.shape)
+    goal = np.asarray(goal, dtype=np.float32).reshape(-1)
+    goals = np.broadcast_to(goal[None], (states.shape[0], goal.shape[0]))
     states_j = jnp.asarray(states)
     goals_j = jnp.asarray(goals)
 
@@ -86,20 +103,40 @@ def collect_agent_diagnostics(
     seed: jax.Array,
     grid_size: int = 48,
     compute_value_field: bool = True,
+    compute_policy_diagnostics: bool = True,
+    temperature: float = 1.0,
 ) -> dict[str, np.ndarray]:
     """Collect value field and agent-specific subgoal/path predictions."""
     diagnostics: dict[str, np.ndarray] = {}
+    observation = np.asarray(observation, dtype=np.float32).reshape(-1)
+    goal = np.asarray(goal, dtype=np.float32).reshape(-1)
     if compute_value_field:
-        field = _value_field(agent, goal, grid_size)
+        # Condition on current non-xy features when the state carries them
+        # (car_race health/heading/...). Hazard 4D keeps the zero-velocity slice.
+        state_dim = int(observation.shape[-1])
+        condition = observation if state_dim > 4 else None
+        field = _value_field(
+            agent,
+            goal,
+            grid_size,
+            state_dim=state_dim,
+            condition_state=condition,
+        )
         if field is not None:
             diagnostics["value_field"] = field
+
+    if not compute_policy_diagnostics:
+        return diagnostics
 
     obs_j = jnp.asarray(observation, dtype=jnp.float32)[None]
     goal_j = jnp.asarray(goal, dtype=jnp.float32)[None]
     config = dict(agent.config)
-
-    if "dynamics_N" in config:
-        candidates, _ = agent._sample_candidates(obs_j, goal_j, seed)
+    # Prefer method presence over config keys: sweeps may inject horizons
+    # (e.g. dynamics_N) into non-PathBridger agents.
+    if hasattr(agent, "_sample_candidates") and hasattr(agent, "_plan"):
+        candidates, _ = agent._sample_candidates(
+            obs_j, goal_j, seed, temperature=float(temperature)
+        )
         scores = score_transitive_ratio(
             agent.network, obs_j, candidates, goal_j
         )

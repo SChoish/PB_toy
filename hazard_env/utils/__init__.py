@@ -1,1 +1,1 @@
-"""Shared utilities for hazard_env agents (mirrors Pathbridger_flow/utils)."""
+"""Environment-specific hazard_env dataset and rendering utilities."""

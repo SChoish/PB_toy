@@ -1,78 +1,118 @@
 # PathBridger toy examples
 
-Illustrative 2D figures and a continuous hazard environment for PathBridger / offline GCRL experiments.
+Offline GCRL toy suite: shared agents and three continuous control environments
+(Hazard2D, CarRace, Orbital Swing-by), plus concept figures.
 
-Repo: https://github.com/SChoish/PB_toy
+**Repo:** https://github.com/SChoish/PB_toy
 
 ```
 toy_examples/
-├── concept/          # single-panel concept figure
-├── hazard_env/       # Hazard2D modes + datasets + toy agents
-│   ├── env.py
-│   ├── generate_navigate.py
-│   ├── plot_tasks.py
-│   ├── HYPERPARAMETERS.md
-│   ├── agents/       # bc, hiql, dynamics (pbg/pbf), critic, train
-│   ├── utils/        # flax_utils, networks, dynamics (bridge), datasets
-│   ├── tests/
-│   ├── datasets/     # hazard_plain / hazard_grav / hazard_anti_grav
-│   ├── checkpoints/  # grouped by environment mode
-│   └── renders/      # grouped by environment mode
-└── refs/             # reference sketches / paper pages
+├── agents/        # BC, HIQL, TR-HIQL, TRL, DQC, PBG, PBF
+├── hazard_env/    # ContinuousHazard2D
+├── car_race/      # annular navigation + lap racing
+├── swingby/       # orbital flyby / swing-by
+└── concept/       # PathBridger concept figures
 ```
 
-## Hazard env
+Release surface is env / train / generate / agents / tests. Local demos, sweeps,
+plots, refs, datasets, checkpoints, and renders are gitignored.
+
+## Install
 
 ```bash
-export PYTHONPATH=/path/to/toy_examples:$PYTHONPATH
+python -m pip install -e .
+python -m pip install -e ".[research]"   # JAX/Flax agents + training
+python -m pip install -e ".[render]"     # optional image/GIF helpers
+python -m pip install -e ".[test]"       # pytest
+```
 
-# collect datasets: env × {navigate,noisy,random} × {1k,10k,100k}
+Requires Python 3.10–3.12. Without an editable install, set
+`PYTHONPATH=/path/to/toy_examples`.
+
+## Agents
+
+| Agent | Role |
+|-------|------|
+| `bc` | behavior cloning |
+| `hiql` / `tr_hiql` | hierarchical / transitive HIQL |
+| `trl` / `dqc` | trajectory / action-chunk critics |
+| `pbg` / `pbf` | PathBridger (Gaussian / flow subgoal) |
+
+PathBridger eval reports **T=0 (mean)** and **T=1 (mean ± std)**. Other families
+use their default temperature (BC/HIQL: 0, TRL/DQC: 1).
+
+Defaults: [`hazard_env/HYPERPARAMETERS.md`](hazard_env/HYPERPARAMETERS.md).
+
+## Hazard2D
+
+| Env | Field |
+|-----|-------|
+| `hazard_plain` | off |
+| `hazard_grav` | attract |
+| `hazard_anti_grav` | repel |
+
+```bash
 python -m hazard_env.generate_navigate --generate-all
-# or one combo
-python -m hazard_env.generate_navigate --env hazard_plain --policy noisy --size 10k
-
-# signed field variants are included via --env / --generate-all
-
-# plot fixed eval tasks 1–5
-python -m hazard_env.plot_tasks --env hazard_grav
-python -m hazard_env.plot_coverage --env hazard_anti_grav --policy navigate --size 100k
-
-# train a toy agent
-python -m hazard_env.agents.train --env hazard_plain --agent bc --steps 50000 \
+python -m hazard_env.train --env hazard_plain --agent pbg --steps 50000 \
   --dataset-policy navigate --dataset-size 100k
-# envs: hazard_plain | hazard_grav | hazard_anti_grav
-# agents: bc | hiql | tr_hiql | pbg | pbf
 ```
 
-All three modes use `ContinuousHazard2DEnv` and `Hazard2DConfig`.
-`gravity_strength=0` disables the field, positive values attract toward the
-hazard, and negative values repel away from it. Field magnitude follows the
-inverse square of the distance from the hazard center.
+Eval tasks: `env.reset(options={"task_id": 1})` … `5`.
 
-Eval tasks: `env.reset(options={"task_id": 1})` … `5` (easy → hard).
+## CarRace
 
-The environment rejects invalid physical configurations and follows the Gymnasium
-episode lifecycle: call `reset()` after either `terminated` or `truncated` becomes true.
+| Env | Physics |
+|-----|---------|
+| `car_race_plain` | baseline (`rolling_drag=0.40`) |
+| `car_race_grav` | inward field |
+| `car_race_anti_grav` | outward field |
+| `car_race_ice` | no field; low cornering, steering, acceleration, and braking grip |
 
-Hyperparameters: see [`hazard_env/HYPERPARAMETERS.md`](hazard_env/HYPERPARAMETERS.md).
+Tasks: `navigation` | `lap_2p` | `lap_4p` | `lap_8p`.
 
-## Concept figure
+Ice retains lateral momentum while the chassis turns. Its low rolling drag also
+makes coasting and stopping distances longer than on the plain surface.
 
 ```bash
-python -m concept.codes_numerical   # → concept/outputs/pathbridger_concept_numerical.png
-python -m concept.codes_nn          # → concept/outputs/pathbridger_concept_nn.png
-python -m concept.codes             # both
+python -m car_race.generate_dataset --generate-all
+python -m car_race.train --env car_race_plain --agent pbg --task navigation \
+  --dataset-size 100k --steps 50000
 ```
 
-| 요소 | 의미 |
-|------|------|
-| Heatmap | \(V(\cdot,g)\), peak at Goal (hazard not encoded) |
-| Black curve | offline data trajectory |
-| Blue line | value-greedy / endpoint-only (through hazard) |
-| Purple solid / dashed | bridge executed prefix / planned remainder |
-| Purple-border node | selected \(z^\star=\hat s_{t+K}\) |
+## Orbital Swing-by
 
-## Refs
+Body presets: `planet` | `black_hole`.
 
-- `refs/ref.png` — labeled sketch (style reference)
-- `refs/_pb_fig1.png`, `_pb_page4.png`, `PathBridger.pdf` — architecture / paper
+```bash
+python -m swingby.generate_dataset --generate-all
+```
+
+## Concept figures
+
+```bash
+python -m concept.codes_numerical
+python -m concept.codes_nn
+python -m concept.codes             # both → concept/outputs/
+```
+
+| Element | Meaning |
+|---------|---------|
+| Heatmap | \(V(\cdot,g)\), peak at goal |
+| Black curve | offline trajectory |
+| Blue line | value-greedy / endpoint-only |
+| Purple path | bridge prefix / planned remainder |
+| Purple node | selected \(z^\star=\hat s_{t+K}\) |
+
+## CLI entry points
+
+`car-race-generate`, `car-race-train`, `hazard-generate`, `hazard-train`,
+`swingby-generate`, `pb-concept`.
+
+## Tests
+
+```bash
+python -m pytest
+```
+
+CI runs pytest on Python 3.10–3.12, a research-import smoke check, and
+wheel/sdist builds.

@@ -4,8 +4,13 @@ from .codes_numerical import main as run_numerical
 from .codes_nn import main as run_nn
 
 
-if __name__ == "__main__":
+def main() -> None:
+    """Generate both concept-figure variants."""
     print("----- Numerical -----")
     run_numerical()
     print("\n----- Tiny NN -----")
     run_nn()
+
+
+if __name__ == "__main__":
+    main()

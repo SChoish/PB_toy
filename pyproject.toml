@@ -1,0 +1,86 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "pathbridger-toy-examples"
+version = "0.1.0"
+description = "PathBridger toy environments, agents, datasets, and concept figures"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "gymnasium>=0.29",
+    "numpy>=1.24,<2",
+]
+keywords = ["gymnasium", "reinforcement-learning", "offline-rl", "navigation", "pathbridger"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Science/Research",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
+
+[project.urls]
+Repository = "https://github.com/SChoish/PB_toy"
+
+[project.optional-dependencies]
+render = [
+    "imageio>=2.31",
+    "matplotlib>=3.7",
+    "pillow>=10",
+]
+research = [
+    "distrax>=0.1.5,<0.2",
+    "flax>=0.8.5,<0.11",
+    "jax[cpu]>=0.4.30,<0.5",
+    "optax>=0.2.3,<0.3",
+    "pillow>=10",
+    "scipy>=1.11,<1.14",
+    "tensorflow-probability>=0.24,<0.26",
+]
+test = [
+    "pytest>=7.4",
+]
+dev = [
+    "build>=1.0",
+    "imageio>=2.31",
+    "matplotlib>=3.7",
+    "pillow>=10",
+    "pytest>=7.4",
+]
+
+[project.scripts]
+car-race-generate = "car_race.generate_dataset:main"
+car-race-train = "car_race.train:main"
+hazard-generate = "hazard_env.generate_navigate:main"
+hazard-train = "hazard_env.train:main"
+pb-concept = "concept.codes:main"
+swingby-generate = "swingby.generate_dataset:main"
+
+[tool.setuptools]
+include-package-data = false
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["agents*", "car_race*", "concept*", "hazard_env*", "swingby*"]
+exclude = [
+    "car_race.tests*",
+    "concept.tests*",
+    "hazard_env.tests*",
+    "swingby.tests*",
+]
+
+[tool.setuptools.package-data]
+hazard_env = ["HYPERPARAMETERS.md"]
+
+[tool.pytest.ini_options]
+addopts = "-ra"
+testpaths = [
+    "car_race/tests",
+    "concept/tests",
+    "hazard_env/tests",
+    "swingby/tests",
+]
