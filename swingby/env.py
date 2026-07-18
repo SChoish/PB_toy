@@ -703,8 +703,8 @@ class OrbitalSwingByEnv(OrbitalSwingByRenderer, gym.Env):
             {
                 "task_name": "task5_fuel_limited_capture",
                 "difficulty": "hardest",
-                "init_xy": (-0.90, -0.26),
-                "init_velocity": (0.59, 0.08),
+                "init_xy": (-0.90, -0.45),
+                "init_velocity": (0.56, -0.04),
                 "goal_xy": (0.72, 0.58),
                 "goal_velocity": (0.18, 0.18),
             },

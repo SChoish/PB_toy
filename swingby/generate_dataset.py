@@ -196,9 +196,8 @@ def collect_split(
                 goals_reached += 1
                 if _retarget_goal(env):
                     goal = commanded_goal(env)
-                    policy_state.passed_periapsis = False
-                    policy_state.min_radius = float(
-                        np.linalg.norm(env.position - env.body_center)
+                    policy_state.reset_for_goal(
+                        float(np.linalg.norm(env.position - env.body_center))
                     )
                 else:
                     # No reachable follow-up goal; end the episode early.

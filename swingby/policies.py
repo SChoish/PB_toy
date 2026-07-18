@@ -22,6 +22,21 @@ class PolicyState:
     hold_steps: int = 0
     passed_periapsis: bool = False
     min_radius: float = np.inf
+    plan_initialized: bool = False
+    preburn_steps_remaining: int = 0
+    preburn_angle: float = 0.0
+    preburn_tracks_tangent: bool = False
+    correction_aggressive: bool = False
+
+    def reset_for_goal(self, radius: float) -> None:
+        """Reset goal-specific planning while retaining random-action state."""
+        self.passed_periapsis = False
+        self.min_radius = float(radius)
+        self.plan_initialized = False
+        self.preburn_steps_remaining = 0
+        self.preburn_angle = 0.0
+        self.preburn_tracks_tangent = False
+        self.correction_aggressive = False
 
 
 def physical_observation(env: OrbitalSwingByEnv) -> Array:
@@ -52,14 +67,116 @@ def _update_periapsis(env: OrbitalSwingByEnv, state: PolicyState) -> None:
         state.passed_periapsis = True
 
 
+def _signed_angular_momentum(env: OrbitalSwingByEnv) -> float:
+    relative = env.position - env.body_center
+    return float(
+        relative[0] * env.velocity[1] - relative[1] * env.velocity[0]
+    )
+
+
+def _tangent_angle(env: OrbitalSwingByEnv) -> float:
+    relative = env.position - env.body_center
+    radius = max(float(np.linalg.norm(relative)), 1e-8)
+    radial = relative / radius
+    ccw = np.array([-radial[1], radial[0]], dtype=np.float32)
+    tangent = ccw if _signed_angular_momentum(env) >= 0.0 else -ccw
+    return float(np.arctan2(tangent[1], tangent[0]))
+
+
+def _initialize_ballistic_plan(
+    env: OrbitalSwingByEnv,
+    state: PolicyState,
+) -> None:
+    """Plan an inbound burn only when the coasting trajectory misses the goal.
+
+    Sampled swing-by goals are selected from a ballistic rollout, so they keep
+    the original fuel-saving coast behavior. Fixed evaluation tasks that miss
+    or collide receive a short angular-momentum burn before phase-space PD.
+    """
+    if state.plan_initialized:
+        return
+    state.plan_initialized = True
+
+    positions, velocities, diagnostics = env.simulate_ballistic(
+        env.position,
+        env.velocity,
+        horizon_steps=min(220, env.config.max_episode_steps),
+    )
+    distances = np.linalg.norm(positions - env.goal, axis=1)
+    closest_index = int(np.argmin(distances))
+    closest_distance = float(distances[closest_index])
+    closest_velocity_error = float(
+        np.linalg.norm(velocities[closest_index] - env.goal_velocity)
+    )
+    safe_coast = not diagnostics["collided"]
+    exact_intercept = (
+        safe_coast
+        and closest_distance <= env.config.goal_radius
+        and closest_velocity_error <= env.config.goal_velocity_tolerance
+    )
+    near_intercept = (
+        safe_coast
+        and closest_distance <= 3.0 * env.config.goal_radius
+        and closest_velocity_error
+        <= 1.3 * env.config.goal_velocity_tolerance
+    )
+    if exact_intercept or near_intercept:
+        # A larger positional miss needs the stronger post-periapsis gains, but
+        # does not benefit from disturbing an otherwise safe fly-by arc.
+        state.correction_aggressive = (
+            closest_distance > 1.5 * env.config.goal_radius
+        )
+        return
+
+    angular_momentum = _signed_angular_momentum(env)
+    tangent_angle = _tangent_angle(env)
+    if abs(angular_momentum) >= 0.18:
+        # Moderate misses are corrected by increasing angular momentum along
+        # the natural fly-by direction.
+        state.preburn_steps_remaining = (
+            25 if env.config.body_kind == "planet" else 30
+        )
+        state.preburn_tracks_tangent = True
+        state.preburn_angle = tangent_angle
+        return
+
+    # Deep approaches need a body-specific rotation away from the pure
+    # tangent. Newtonian tasks need a smaller lead angle; the pseudo-potential
+    # needs a strong outward component before the correction burn.
+    direction_sign = 1.0 if angular_momentum >= 0.0 else -1.0
+    if env.config.body_kind == "planet":
+        state.preburn_angle = tangent_angle + direction_sign * 0.38
+    else:
+        state.preburn_angle = tangent_angle - direction_sign * 1.19
+        state.correction_aggressive = True
+    state.preburn_angle = float(
+        (state.preburn_angle + np.pi) % (2.0 * np.pi) - np.pi
+    )
+    state.preburn_steps_remaining = 28
+
+
 def expert_action(
     env: OrbitalSwingByEnv,
     state: PolicyState,
     *,
     aggressive: bool = False,
 ) -> Array:
-    """Coast through periapsis, then phase-space PD correction burns."""
+    """Use ballistic pre-burn planning, then phase-space PD correction."""
+    _initialize_ballistic_plan(env, state)
     _update_periapsis(env, state)
+
+    if state.preburn_steps_remaining > 0:
+        angle = (
+            _tangent_angle(env)
+            if state.preburn_tracks_tangent
+            else state.preburn_angle
+        )
+        state.preburn_steps_remaining -= 1
+        if state.preburn_steps_remaining == 0:
+            state.passed_periapsis = True
+        return np.array([angle, 1.0], dtype=np.float32)
+
+    aggressive = bool(aggressive or state.correction_aggressive)
 
     position_error = env.goal - env.position
     velocity_error = env.goal_velocity - env.velocity

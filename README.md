@@ -87,6 +87,11 @@ Body presets: `planet` | `black_hole`.
 python -m swingby.generate_dataset --generate-all
 ```
 
+The expert first predicts the unpowered trajectory. Reachable ballistic goals
+coast through periapsis; collision or goal-miss predictions trigger an inbound
+angular-momentum burn before the phase-space correction. All five fixed tasks
+are regression-tested for both body presets.
+
 ## Concept figures
 
 ```bash
