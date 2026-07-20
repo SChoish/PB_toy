@@ -42,3 +42,8 @@ refs/
 
 # Local training / orchestrator logs
 nohup_logs/
+
+# Local scoreboard / curve dumps (regenerated)
+curves/
+curves.md
+scores.md

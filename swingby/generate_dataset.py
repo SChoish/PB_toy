@@ -153,7 +153,7 @@ def _reset_swingby_family(
     rng: np.random.Generator,
     seed: int,
 ) -> None:
-    """Sample a train-only rotation; canonical and outer eval bands are held out."""
+    """Sample a train-only rotation; canonical and eval bands are held out."""
     rotation = sample_swingby_train_rotation(rng, task_family_id)
     env.reset(
         seed=seed,

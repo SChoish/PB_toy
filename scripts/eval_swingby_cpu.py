@@ -157,10 +157,15 @@ def eval_one(
     schema = meta["config"].get("task_schema")
     ds = _dataset_for_ckpt(env, policy, schema)
     if not ds.is_file():
-        # fallback expert
-        ds2 = _dataset_for_ckpt(env, "expert", schema)
-        if ds2.is_file():
-            ds = ds2
+        # Versioned taskmix files were renamed in place to the canonical
+        # swingby schema.  They remain valid templates for legacy checkpoints
+        # because the physical state/action shapes and action encoding match.
+        canonical = DS_ROOT / f"{env}_swingby_{policy}_100k.npz"
+        expert = DS_ROOT / f"{env}_swingby_expert_100k.npz"
+        if canonical.is_file():
+            ds = canonical
+        elif expert.is_file():
+            ds = expert
         else:
             raise FileNotFoundError(f"dataset missing for {tag}: tried {ds}")
 

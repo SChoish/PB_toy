@@ -277,6 +277,7 @@ def _append_transition(
     is_lap: bool,
     lap_direction: int,
     lap_start_angle: float,
+    commanded_goal: np.ndarray,
 ) -> None:
     store["observations"].append(np.asarray(observation, dtype=np.float32))
     store["actions"].append(np.asarray(action, dtype=np.float32))
@@ -288,6 +289,9 @@ def _append_transition(
     store["step_impulses"].append(float(info["step_impulse"]))
     store["hazard_contacts"].append(bool(info["hazard_contact"]))
     store["episode_ids"].append(int(episode_id))
+    store["commanded_goals"].append(
+        np.asarray(commanded_goal, dtype=np.float32)
+    )
     store["is_lap"].append(bool(is_lap))
     store["lap_directions"].append(int(lap_direction))
     store["lap_start_angles"].append(float(lap_start_angle))
@@ -330,7 +334,9 @@ def collect_split(
     env = CarRaceEnv(
         config=config,
         observation_mode="state",
-        terminate_on_success=(task == "lap"),
+        # Keep one commanded goal per episode so terminal boundaries and goals
+        # remain aligned for offline relabeling.
+        terminate_on_success=True,
     )
     rng = np.random.default_rng(seed)
     store = _empty_store()
@@ -340,10 +346,14 @@ def collect_split(
     laps_completed = 0
     random_actions = 0
     aggressive_episodes = 0
+    rejected_expert_episodes = 0
+    attempt_id = 0
 
     while len(store["actions"]) < minimum_steps:
-        env.reset(seed=seed + episode_id + 1)
+        env.reset(seed=seed + attempt_id + 1)
+        attempt_id += 1
         observation = physical_observation(env)
+        episode_store = _empty_store()
         lap_direction = int(env._lap_direction) if task == "lap" else 0
         lap_start_angle = (
             float(np.arctan2(env.position[1], env.position[0]))
@@ -352,11 +362,12 @@ def collect_split(
         )
         policy_state = PolicyState()
         aggressive = policy != "random" and rng.random() < 0.15
-        aggressive_episodes += int(aggressive)
+        episode_random_actions = 0
         done = False
         info: dict = {}
 
         while not done:
+            commanded_goal = env.desired_goal.copy()
             action, used_random = behavior_action(
                 env,
                 policy,
@@ -365,12 +376,12 @@ def collect_split(
                 aggressive=aggressive,
                 noise=noise,
             )
-            random_actions += int(used_random)
+            episode_random_actions += int(used_random)
             _, _, terminated, truncated, info = env.step(action)
             next_observation = physical_observation(env)
             done = bool(terminated or truncated)
             _append_transition(
-                store,
+                episode_store,
                 observation=observation,
                 action=action,
                 next_observation=next_observation,
@@ -380,19 +391,21 @@ def collect_split(
                 is_lap=(task == "lap"),
                 lap_direction=lap_direction,
                 lap_start_angle=lap_start_angle,
+                commanded_goal=commanded_goal,
             )
             observation = next_observation
-            if task == "navigation" and info.get("is_success", False) and not done:
-                goals_reached += 1
-                env.set_goal(
-                    env.sample_safe_point(
-                        min_distance_from=env.position,
-                        minimum_distance=config.min_start_goal_distance,
-                    )
-                )
 
+        succeeded = bool(info.get("is_success", False))
+        if policy == "expert" and not succeeded:
+            rejected_expert_episodes += 1
+            continue
+        for key, values in episode_store.items():
+            store[key].extend(values)
+        aggressive_episodes += int(aggressive)
+        random_actions += episode_random_actions
         deaths += int(info.get("dead", False))
-        laps_completed += int(task == "lap" and info.get("is_success", False))
+        goals_reached += int(task == "navigation" and succeeded)
+        laps_completed += int(task == "lap" and succeeded)
         episode_id += 1
 
     env.close()
@@ -407,6 +420,7 @@ def collect_split(
         "hazard_contact_frac": float(arrays["hazard_contacts"].mean()),
         "random_action_frac": float(random_actions / max(count, 1)),
         "aggressive_episode_frac": float(aggressive_episodes / max(episode_id, 1)),
+        "rejected_expert_episodes": float(rejected_expert_episodes),
     }
     return arrays, stats
 

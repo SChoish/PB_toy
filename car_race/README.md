@@ -55,8 +55,8 @@ ordered hit.
 Observation modes: `state`, `state_goal`, `goal_dict`.
 Tasks: `navigation` | `lap_1p` … `lap_8p`.
 
-Ice uses reduced cornering grip (`0.20`), longitudinal acceleration/braking grip
-(`0.53`), and steering response (`0.55`). The chassis can point into a turn while
+Ice uses reduced cornering grip (`0.15`), longitudinal acceleration/braking grip
+(`0.45`), and steering response (`0.465`). The chassis can point into a turn while
 the observed `external_velocity` retains the previous travel direction, producing
 real drift without changing the state or dataset dimensions.
 

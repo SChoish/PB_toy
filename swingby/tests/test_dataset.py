@@ -95,6 +95,10 @@ class SwingByDatasetTest(unittest.TestCase):
             batch["goals"][commanded],
         )
         self.assertEqual(data.action_encoding, CARTESIAN_ACTION_ENCODING)
+        need = max(data.path_horizon, data.action_chunk_horizon)
+        self.assertTrue(
+            np.all(data.valid_indices + need - 1 <= data.episode_ends[data.valid_indices])
+        )
 
     def test_trl_commanded_goals_use_reached_trajectory_offsets(self):
         data = load_swingby_trl_dataset(

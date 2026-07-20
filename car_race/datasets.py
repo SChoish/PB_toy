@@ -322,6 +322,7 @@ def _augment_task_view(
     *,
     lap_directions: np.ndarray | None = None,
     lap_start_angles: np.ndarray | None = None,
+    raw_commanded_goals: np.ndarray | None = None,
     goal_radius: float = 0.07,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """Build navigation or waypoint-exact lap annotations over raw physics."""
@@ -346,8 +347,12 @@ def _augment_task_view(
     for episode_id in np.unique(episode_ids):
         indices = np.flatnonzero(episode_ids == episode_id)
         if task == "navigation":
-            final_xy = raw_next_observations[indices[-1], :2]
-            commanded_goals[indices, :2] = final_xy
+            if raw_commanded_goals is not None:
+                commanded_goals[indices] = raw_commanded_goals[indices]
+            else:
+                # Legacy files did not store the active navigation command.
+                final_xy = raw_next_observations[indices[-1], :2]
+                commanded_goals[indices, :2] = final_xy
             continue
 
         assert lap_directions is not None and lap_start_angles is not None
@@ -493,12 +498,24 @@ def load_car_race_dataset(
         if "lap_start_angles" in raw.files
         else None
     )
+    raw_is_lap = (
+        np.asarray(raw["is_lap"], dtype=bool)
+        if "is_lap" in raw.files
+        else None
+    )
+    raw_commanded_goals = (
+        np.asarray(raw["commanded_goals"], dtype=np.float32)
+        if "commanded_goals" in raw.files
+        and (raw_is_lap is None or not np.any(raw_is_lap))
+        else None
+    )
+    if raw_commanded_goals is not None and raw_commanded_goals.shape != (
+        len(raw_observations),
+        4,
+    ):
+        raise ValueError("commanded_goals must have shape (N, 4)")
     if task != "navigation":
-        is_lap = (
-            np.asarray(raw["is_lap"], dtype=bool)
-            if "is_lap" in raw.files
-            else None
-        )
+        is_lap = raw_is_lap
         if is_lap is None or is_lap.shape != terminals.shape or not np.all(is_lap):
             raise ValueError(
                 "lap task views require a universal lap dataset generated with --task lap"
@@ -510,8 +527,35 @@ def load_car_race_dataset(
         task,
         lap_directions=lap_directions,
         lap_start_angles=lap_start_angles,
+        raw_commanded_goals=raw_commanded_goals,
         goal_radius=goal_radius,
     )
+
+    # A universal dense-checkpoint lap can finish a coarser synthetic task
+    # earlier (notably ice lap_1p/lap_2p).  Truncate each task view at its first
+    # completion so no post-success states or actions leak into the offline MDP.
+    if task != "navigation":
+        keep = np.ones(len(observations), dtype=bool)
+        synthetic_terminals = terminals.copy()
+        for episode_id in np.unique(episode_ids):
+            episode_indices = np.flatnonzero(episode_ids == episode_id)
+            completed = episode_indices[
+                next_observations[episode_indices, 2] >= 1.0 - 1e-6
+            ]
+            if len(completed) == 0:
+                continue
+            completion = int(completed[0])
+            keep[episode_indices[episode_indices > completion]] = False
+            synthetic_terminals[completion] = True
+        observations = observations[keep]
+        actions = actions[keep]
+        next_observations = next_observations[keep]
+        synthetic_terminals = synthetic_terminals[keep]
+        goals = goals[keep]
+        episode_ids = episode_ids[keep]
+        terminals = synthetic_terminals
+        episode_ends = _episode_end_lookup(episode_ids, terminals)
+
     indices = np.arange(len(observations), dtype=np.int64)
     need = max(int(path_horizon), int(action_chunk_horizon))
     valid_indices = indices[indices + need - 1 <= episode_ends]

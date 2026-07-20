@@ -50,6 +50,21 @@ class SwingByApiTest(unittest.TestCase):
             self.assertEqual(int(np.isclose(angles, 0.0).sum()), 1)
             self.assertEqual(len(np.unique(angles)), 25)
 
+    def test_fixed_tasks_are_outgoing_powered_flybys(self):
+        env = OrbitalSwingByEnv(config=planet_config(), observation_mode="state")
+        for task in env.task_infos:
+            self.assertLess(float(task["init_xy"][0]), 0.0)
+            self.assertGreater(float(task["goal_xy"][0]), 0.0)
+        env.close()
+
+    def test_slow_capture_rejects_stationary_velocity(self):
+        env = OrbitalSwingByEnv(config=planet_config(), observation_mode="state")
+        env.reset(options={"task_id": 5})
+        achieved = np.concatenate([env.goal, np.zeros(2, dtype=np.float32)])
+        reward = env.compute_reward(achieved, env.desired_goal)
+        self.assertLess(reward, env.config.success_reward)
+        env.close()
+
     def test_expert_action_is_normalized(self):
         env = OrbitalSwingByEnv(config=planet_config(), observation_mode="state")
         env.reset(seed=0)
@@ -65,7 +80,7 @@ class SwingByApiTest(unittest.TestCase):
         _, eval_info = eval_env.reset(options={"task_id": 1})
         correction = expert_action(eval_env, PolicyState())
         self.assertEqual(eval_info["task_profile"], "eval_fixed")
-        self.assertEqual(eval_info["task_name"], "task1_offset_intercept")
+        self.assertEqual(eval_info["task_name"], "task1_shallow_powered_flyby")
         self.assertEqual(float(correction[1]), 1.0)
         eval_env.close()
 
@@ -80,7 +95,7 @@ class SwingByApiTest(unittest.TestCase):
         self.assertEqual(float(coast[1]), 0.0)
         data_env.close()
 
-    def test_fixed_eval_mix_uses_dataset_t2_and_interpolated_t5(self):
+    def test_fixed_eval_mix_uses_dataset_t2_and_interpolated_hard_tasks(self):
         eval_env = OrbitalSwingByEnv(
             config=planet_config(), observation_mode="state"
         )
@@ -95,6 +110,9 @@ class SwingByApiTest(unittest.TestCase):
             )
         self.assertEqual(
             eval_env.task_infos[4]["task_name"], "task5_mixed_far_capture"
+        )
+        self.assertEqual(
+            eval_env.task_infos[3]["task_name"], "task4_heldout_deep_swingby"
         )
         self.assertFalse(
             np.allclose(

@@ -73,13 +73,28 @@ def goal_success(
     *,
     goal_radius: float = 0.075,
     goal_velocity_tolerance: float = 0.35,
+    goal_min_speed_ratio: float = 0.50,
+    goal_min_velocity_alignment: float = 0.75,
 ) -> np.ndarray:
     """Position + velocity match on the 4-D commanded goal."""
     achieved = np.asarray(achieved_xy_v, dtype=np.float32)[..., :4]
     desired = np.asarray(desired, dtype=np.float32)[..., :4]
     pos = np.linalg.norm(achieved[..., :2] - desired[..., :2], axis=-1)
-    vel = np.linalg.norm(achieved[..., 2:4] - desired[..., 2:4], axis=-1)
-    return (pos <= goal_radius) & (vel <= goal_velocity_tolerance)
+    actual_velocity = achieved[..., 2:4]
+    target_velocity = desired[..., 2:4]
+    vel = np.linalg.norm(actual_velocity - target_velocity, axis=-1)
+    actual_speed = np.linalg.norm(actual_velocity, axis=-1)
+    target_speed = np.linalg.norm(target_velocity, axis=-1)
+    aligned = np.sum(actual_velocity * target_velocity, axis=-1) >= (
+        goal_min_velocity_alignment * actual_speed * target_speed
+    )
+    fast_enough = actual_speed >= goal_min_speed_ratio * target_speed
+    directed = np.where(target_speed <= 1e-8, True, aligned & fast_enough)
+    return (
+        (pos <= goal_radius)
+        & (vel <= goal_velocity_tolerance)
+        & directed
+    )
 
 
 def _infer_episode_ids(terminals: np.ndarray) -> np.ndarray:
@@ -128,6 +143,8 @@ class SwingbyDataset:
     random_goal_prob: float = 0.0
     goal_radius: float = 0.075
     goal_velocity_tolerance: float = 0.35
+    goal_min_speed_ratio: float = 0.50
+    goal_min_velocity_alignment: float = 0.75
     value_base_horizon: int = 5
     dataset_schema: str = "ballistic_v1"
     action_encoding: str = LEGACY_ACTION_ENCODING
@@ -253,6 +270,8 @@ class SwingbyDataset:
             goals,
             goal_radius=self.goal_radius,
             goal_velocity_tolerance=self.goal_velocity_tolerance,
+            goal_min_speed_ratio=self.goal_min_speed_ratio,
+            goal_min_velocity_alignment=self.goal_min_velocity_alignment,
         ).astype(np.float32)
         masks = (
             (1.0 - batch_successes)
@@ -448,6 +467,8 @@ def load_swingby_dataset(
     value_base_horizon: int = 5,
     goal_radius: float = 0.075,
     goal_velocity_tolerance: float = 0.35,
+    goal_min_speed_ratio: float = 0.50,
+    goal_min_velocity_alignment: float = 0.75,
 ) -> SwingbyDataset:
     """Load a swingby generate_dataset NPZ into a GCRL transition store."""
     if path_horizon < 1:
@@ -491,10 +512,15 @@ def load_swingby_dataset(
     next_observations = np.asarray(raw["next_observations"], dtype=np.float32)
     terminals = np.asarray(raw["terminals"], dtype=bool)
     commanded_goals = np.asarray(raw["commanded_goals"], dtype=np.float32)
-    successes = (
-        np.asarray(raw["successes"], dtype=bool)
-        if "successes" in raw.files
-        else goal_success(next_observations, commanded_goals)
+    # Recompute canonical success labels from the current goal contract.
+    # Older files used only a loose Euclidean velocity tolerance.
+    successes = goal_success(
+        next_observations,
+        commanded_goals,
+        goal_radius=goal_radius,
+        goal_velocity_tolerance=goal_velocity_tolerance,
+        goal_min_speed_ratio=goal_min_speed_ratio,
+        goal_min_velocity_alignment=goal_min_velocity_alignment,
     )
 
     if observations.ndim != 2 or observations.shape[1] != 5:
@@ -533,11 +559,11 @@ def load_swingby_dataset(
             commanded_goal_indices[segment_start : target + 1] = target
         segment_start = index
     indices = np.arange(len(observations), dtype=np.int64)
-    if dataset_schema in SWINGBY_SCHEMAS:
-        valid_indices = indices
-    else:
-        need = max(int(path_horizon), int(action_chunk_horizon))
-        valid_indices = indices[indices + need - 1 <= episode_ends]
+    # All path/action-chunk samples must be composed of real transitions.
+    # Terminal padding is still used inside a path shortened to a sampled goal,
+    # but never to fabricate behavior after the environment has terminated.
+    need = max(int(path_horizon), int(action_chunk_horizon))
+    valid_indices = indices[indices + need - 1 <= episode_ends]
     if len(valid_indices) == 0:
         raise ValueError(
             f"no episode contains a valid K={path_horizon} / h_a={action_chunk_horizon} window"
@@ -559,6 +585,8 @@ def load_swingby_dataset(
         random_goal_prob=float(random_goal_prob),
         goal_radius=float(goal_radius),
         goal_velocity_tolerance=float(goal_velocity_tolerance),
+        goal_min_speed_ratio=float(goal_min_speed_ratio),
+        goal_min_velocity_alignment=float(goal_min_velocity_alignment),
         value_base_horizon=int(value_base_horizon),
         dataset_schema=dataset_schema,
         action_encoding=action_encoding,

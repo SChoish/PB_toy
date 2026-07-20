@@ -40,6 +40,10 @@ class OrbitalSwingByConfig:
     satellite_radius: float = 0.018
     goal_radius: float = 0.075
     goal_velocity_tolerance: float = 0.35
+    # A loose Euclidean tolerance alone lets a stationary vehicle satisfy the
+    # slow capture goals.  Require meaningful target-direction motion as well.
+    goal_min_speed_ratio: float = 0.50
+    goal_min_velocity_alignment: float = 0.75
     goal_requires_velocity_match: bool = True
     spawn_clearance: float = 0.07
 
@@ -110,6 +114,10 @@ class OrbitalSwingByConfig:
             raise ValueError("goal_radius must be positive")
         if self.goal_velocity_tolerance <= 0.0:
             raise ValueError("goal_velocity_tolerance must be positive")
+        if not 0.0 <= self.goal_min_speed_ratio <= 1.0:
+            raise ValueError("goal_min_speed_ratio must be in [0, 1]")
+        if not 0.0 <= self.goal_min_velocity_alignment <= 1.0:
+            raise ValueError("goal_min_velocity_alignment must be in [0, 1]")
         if self.spawn_clearance < 0.0:
             raise ValueError("spawn_clearance must be non-negative")
         if self.gravitational_parameter < 0.0:

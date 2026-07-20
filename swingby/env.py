@@ -43,9 +43,11 @@ except ImportError:  # script-style: `cd swingby && python ...`
 
 Array = np.ndarray
 
-# Train uses inner rotation bands; evaluation uses the canonical task once and
-# held-out outer bands. Central-force dynamics are rotation-equivariant, so this
-# changes geometry without changing the intended burn/capture skill.
+# Training and evaluation use disjoint rotation bands, with the canonical task
+# evaluated once. Central-force dynamics are rotation-equivariant, so this
+# changes geometry without changing the intended burn/capture skill. T2 mixes
+# one near-side and one opposite-side held-out band: this exposes MLP rotation
+# sensitivity without making all 24 variants uniformly out of distribution.
 SWINGBY_TRAIN_ROTATION_RANGES: dict[int, tuple[tuple[float, float], ...]] = {
     1: ((-0.18, -0.04), (0.04, 0.12)),
     2: ((-0.18, -0.04),),
@@ -55,7 +57,7 @@ SWINGBY_TRAIN_ROTATION_RANGES: dict[int, tuple[tuple[float, float], ...]] = {
 }
 SWINGBY_EVAL_ROTATION_RANGES: dict[int, tuple[tuple[float, float], ...]] = {
     1: ((-0.30, -0.21), (0.15, 0.18)),
-    2: ((-0.30, -0.21),),
+    2: ((-0.21, -0.19), (0.01, 0.07)),
     3: ((0.21, 0.30),),
     4: ((-0.30, -0.21),),
     5: ((0.21, 0.30),),
@@ -152,14 +154,30 @@ HARD_TASKS: tuple[dict[str, Any], ...] = (
 
 )
 
-# Final benchmark: mix the solvable hard tasks with one dataset goal task,
-# plus a validated 77.5% hard interpolation for T5. On the reference 5k HIQL
-# checkpoint this yields 0.504 mean success while the expert remains 250/250.
+# Final powered-flyby benchmark. Every task starts on the left and targets an
+# outgoing state on the right after a central-body pass. The mix keeps a shared
+# state/action/goal contract while spanning dataset and calibrated hard geometry.
 FIXED_EVAL_TASKS: tuple[dict[str, Any], ...] = (
-    HARD_TASKS[0],
+    {
+        "task_name": "task1_shallow_powered_flyby",
+        "difficulty": "medium-hard",
+        "init_xy": (-0.83, 0.50),
+        "init_velocity": (0.42, -0.02),
+        "goal_xy": (0.77, -0.25),
+        "goal_velocity": (0.39, -0.22),
+    },
     DATASET_TASKS[1],
     HARD_TASKS[2],
-    HARD_TASKS[3],
+    {
+        "task_name": "task4_heldout_deep_swingby",
+        "difficulty": "hardest",
+        # Dataset T4 geometry under a disjoint outer rotation band. This is a
+        # rare-success task for HIQL while remaining robustly expert-solvable.
+        "init_xy": (-0.91, 0.54),
+        "init_velocity": (0.52, -0.13),
+        "goal_xy": (0.83, -0.58),
+        "goal_velocity": (0.34, -0.27),
+    },
     {
         "task_name": "task5_mixed_far_capture",
         "difficulty": "hardest",
@@ -381,6 +399,25 @@ class OrbitalSwingByEnv(OrbitalSwingByRenderer, gym.Env):
     @property
     def velocity_error(self) -> float:
         return float(np.linalg.norm(self.velocity - self.goal_velocity))
+
+    def velocity_matches_goal(self, velocity: Array | None = None) -> bool:
+        """Require velocity proximity plus target-direction motion."""
+        actual = np.asarray(
+            self.velocity if velocity is None else velocity, dtype=np.float64
+        )
+        target = np.asarray(self.goal_velocity, dtype=np.float64)
+        if np.linalg.norm(actual - target) > self.config.goal_velocity_tolerance:
+            return False
+        target_speed = float(np.linalg.norm(target))
+        if target_speed <= 1e-8:
+            return True
+        actual_speed = float(np.linalg.norm(actual))
+        if actual_speed < self.config.goal_min_speed_ratio * target_speed:
+            return False
+        alignment = float(
+            np.dot(actual, target) / max(actual_speed * target_speed, 1e-12)
+        )
+        return alignment >= self.config.goal_min_velocity_alignment
 
     @property
     def specific_orbital_energy(self) -> float:
@@ -723,7 +760,7 @@ class OrbitalSwingByEnv(OrbitalSwingByRenderer, gym.Env):
         velocity_success = (
             True
             if not self.config.goal_requires_velocity_match
-            else self.velocity_error <= self.config.goal_velocity_tolerance
+            else self.velocity_matches_goal()
         )
         self.success = bool(
             not self.dead
@@ -820,9 +857,24 @@ class OrbitalSwingByEnv(OrbitalSwingByRenderer, gym.Env):
             achieved[..., 2:] - desired[..., 2:], axis=-1
         )
         if self.config.goal_requires_velocity_match:
+            actual_velocity = achieved[..., 2:]
+            target_velocity = desired[..., 2:]
+            actual_speed = np.linalg.norm(actual_velocity, axis=-1)
+            target_speed = np.linalg.norm(target_velocity, axis=-1)
+            aligned = np.sum(actual_velocity * target_velocity, axis=-1) >= (
+                self.config.goal_min_velocity_alignment
+                * actual_speed
+                * target_speed
+            )
+            fast_enough = actual_speed >= (
+                self.config.goal_min_speed_ratio * target_speed
+            )
+            directed = np.where(
+                target_speed <= 1e-8, True, aligned & fast_enough
+            )
             success = (position_distance <= self.config.goal_radius) & (
                 velocity_distance <= self.config.goal_velocity_tolerance
-            )
+            ) & directed
         else:
             success = position_distance <= self.config.goal_radius
 
@@ -1213,6 +1265,7 @@ class OrbitalSwingByEnv(OrbitalSwingByRenderer, gym.Env):
             "goal_velocity": self.goal_velocity.copy(),
             "distance_to_goal": self.distance_to_goal,
             "velocity_error": self.velocity_error,
+            "velocity_goal_matched": self.velocity_matches_goal(),
             "relative_speed_to_goal": self.velocity_error,
             "fuel": float(self.fuel),
             "fuel_fraction": self.fuel_fraction,

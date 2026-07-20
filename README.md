@@ -64,9 +64,12 @@ python -m car_race.train --env car_race_plain --agent pbg --task navigation \
   --dataset-size 100k --steps 50000
 ```
 
-## Orbital Swing-by
+## Powered Orbital Flyby (`swingby` API)
 
-Body presets: `planet` | `black_hole`.
+Body presets: `planet` | `black_hole`.  This is a fuel-limited powered rocket
+flyby around a fixed central body, not a moving-planet gravity assist that can add
+inertial-frame energy.  Every fixed evaluation task now starts on the incoming
+left branch and targets an outgoing state on the right after a body pass.
 
 ```bash
 # Default swingby dataset: one balanced dataset spanning T1 through T5.
@@ -81,9 +84,11 @@ python -m swingby.generate_dataset --generate-all --dataset-mode ballistic
 `swingby` balances transition coverage across the five fixed task families
 while separating train and evaluation initial conditions. Training uses the
 frozen `dataset` task table and inner rotation bands. The fixed evaluation
-mixes validated hard initial states/goals with the original T2 goal task and a
-77.5% hard T5 interpolation, running each canonical task once plus 24 variants
-from disjoint outer rotation bands. The expert dataset keeps only successful
+uses an outgoing powered T1, the original T2/T4 flyby geometry, a hard T3, and a
+77.5% hard T5 interpolation. Each canonical task runs once plus 24 variants from
+disjoint held-out rotation bands; T2 mixes near- and opposite-side bands so its
+variants are challenging without being uniformly far out of distribution.
+The expert dataset keeps only successful
 trajectories, terminates each trajectory on its commanded goal, and trains with
 a 50/50 mix of exact commanded goals and future HER goals whenever that
 commanded goal was actually reached. Network actions use continuous Cartesian thrust
@@ -95,7 +100,10 @@ for reproducibility but are never selected by the default matrix scripts.
 
 The expert first predicts the unpowered trajectory. Reachable ballistic goals
 coast through periapsis; collision or goal-miss predictions trigger an inbound
-angular-momentum burn before the phase-space correction. All five fixed tasks
+angular-momentum burn before the phase-space correction. Goal success requires
+position proximity, velocity-error tolerance, at least half the requested speed,
+and positive target-direction alignment; a stationary rocket cannot satisfy a
+slow capture goal. All five fixed tasks
 are regression-tested for both body presets.
 
 ## Concept figures

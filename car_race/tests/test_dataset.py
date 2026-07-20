@@ -162,6 +162,29 @@ class CollectorTest(unittest.TestCase):
             self.assertTrue(data["terminals"][indices[-1]])
             self.assertFalse(np.any(data["terminals"][indices[:-1]]))
 
+    def test_navigation_expert_is_one_successful_command_per_episode(self):
+        data, stats = collect_split(
+            policy="expert",
+            minimum_steps=200,
+            seed=23,
+            max_episode_steps=300,
+            noise=0.08,
+            task="navigation",
+        )
+        self.assertEqual(stats["death_rate"], 0.0)
+        self.assertEqual(stats["goals_per_episode"], 1.0)
+        self.assertIn("commanded_goals", data)
+        for episode_id in np.unique(data["episode_ids"]):
+            indices = np.flatnonzero(data["episode_ids"] == episode_id)
+            np.testing.assert_allclose(
+                data["commanded_goals"][indices],
+                np.broadcast_to(
+                    data["commanded_goals"][indices[0]],
+                    (len(indices), 4),
+                ),
+            )
+            self.assertTrue(data["terminals"][indices[-1]])
+
     def test_train_and_validation_seeds_produce_different_rollouts(self):
         train, _ = collect_split(
             policy="expert",
@@ -235,6 +258,34 @@ class CarRaceDatasetLoaderTest(unittest.TestCase):
                     crossings,
                     len(np.unique(dataset.episode_ids)) * ring_count,
                 )
+
+    def test_ice_coarse_lap_view_truncates_post_success_tail(self):
+        with tempfile.TemporaryDirectory() as directory:
+            raw, _ = collect_split(
+                policy="expert",
+                minimum_steps=180,
+                seed=5,
+                max_episode_steps=500,
+                noise=0.08,
+                env_name="car_race_ice",
+                task="lap",
+            )
+            path = pathlib.Path(directory) / "ice_lap.npz"
+            np.savez_compressed(path, **raw)
+            coarse = load_car_race_dataset(path, task="lap_1p")
+            dense = load_car_race_dataset(path, task="lap_8p")
+
+        self.assertLess(len(coarse), len(dense))
+        for episode_id in np.unique(coarse.episode_ids):
+            indices = np.flatnonzero(coarse.episode_ids == episode_id)
+            self.assertTrue(coarse.terminals[indices[-1]])
+            self.assertAlmostEqual(
+                float(coarse.next_observations[indices[-1], 2]), 1.0
+            )
+        need = max(coarse.path_horizon, coarse.action_chunk_horizon)
+        self.assertTrue(
+            np.all(coarse.valid_indices + need - 1 <= coarse.episode_ends[coarse.valid_indices])
+        )
 
     def test_batch_shapes_match_gcrl_agents(self):
         with tempfile.TemporaryDirectory() as directory:
