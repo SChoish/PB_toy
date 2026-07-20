@@ -43,6 +43,17 @@ endpoints; no pinned mean). Other families use their default temperature (BC/HIQ
 
 Defaults: [`agents/HYPERPARAMETERS.md`](agents/HYPERPARAMETERS.md).
 
+## Benchmark contract
+
+Both environments expose five fixed evaluation tasks with task IDs 1 through 5
+via `env.reset(options={"task_id": n})`; `info["goal"]` is exactly the 4-D goal
+passed to the agent and `info["success"]` reports task completion. Datasets use
+regular transition tuples with explicit `next_observations`. Train/validation
+splits use disjoint seeds and retain whole episodes. `terminals` marks trajectory
+boundaries, while goal-conditioned Bellman masks are computed separately from
+the relabeled goal success and true absorbing failures (collision/death/escape),
+not from time-limit boundaries.
+
 ## CarRace
 
 | Env | Physics |
@@ -71,6 +82,15 @@ flyby around a fixed central body, not a moving-planet gravity assist that can a
 inertial-frame energy.  Every fixed evaluation task now starts on the incoming
 left branch and targets an outgoing state on the right after a body pass.
 
+| Contract | Definition |
+|----------|------------|
+| State | `[x, y, vx, vy, fuel_fraction]` |
+| Runtime action | `[inertial_thrust_angle, throttle]`, in `[-pi, pi] x [0, 1]` |
+| Network action | Cartesian thrust `throttle * [cos(angle), sin(angle)]` |
+| Goal | `[goal_x, goal_y, goal_vx, goal_vy]` |
+| Physics | Fixed central field, variable wet mass, fuel-limited thrust, velocity-Verlet with `dt=0.04` and 8 substeps |
+
+
 ```bash
 # Default swingby dataset: one balanced dataset spanning T1 through T5.
 python -m swingby.generate_dataset --generate-all
@@ -80,7 +100,6 @@ python -m swingby.train --env swingby_planet --agent hiql \
 # Legacy coast-aligned distribution remains available for ablations.
 python -m swingby.generate_dataset --generate-all --dataset-mode ballistic
 ```
-
 `swingby` balances transition coverage across the five fixed task families
 while separating train and evaluation initial conditions. Training uses the
 frozen `dataset` task table and inner rotation bands. The fixed evaluation
@@ -102,8 +121,8 @@ The expert first predicts the unpowered trajectory. Reachable ballistic goals
 coast through periapsis; collision or goal-miss predictions trigger an inbound
 angular-momentum burn before the phase-space correction. Goal success requires
 position proximity, velocity-error tolerance, at least half the requested speed,
-and positive target-direction alignment; a stationary rocket cannot satisfy a
-slow capture goal. All five fixed tasks
+and velocity cosine alignment of at least `0.75`; a stationary rocket cannot
+satisfy a slow capture goal. All five fixed tasks
 are regression-tested for both body presets.
 
 ## Concept figures

@@ -24,6 +24,7 @@ from gymnasium import spaces
 
 try:
     from .config import (
+        GOAL_NUMERICAL_TOLERANCE,
         ObservationMode,
         OrbitalSwingByConfig,
         TaskMode,
@@ -33,6 +34,7 @@ try:
     from .render import OrbitalSwingByRenderer
 except ImportError:  # script-style: `cd swingby && python ...`
     from config import (
+        GOAL_NUMERICAL_TOLERANCE,
         ObservationMode,
         OrbitalSwingByConfig,
         TaskMode,
@@ -406,18 +408,24 @@ class OrbitalSwingByEnv(OrbitalSwingByRenderer, gym.Env):
             self.velocity if velocity is None else velocity, dtype=np.float64
         )
         target = np.asarray(self.goal_velocity, dtype=np.float64)
-        if np.linalg.norm(actual - target) > self.config.goal_velocity_tolerance:
+        if np.linalg.norm(actual - target) > (
+            self.config.goal_velocity_tolerance + GOAL_NUMERICAL_TOLERANCE
+        ):
             return False
         target_speed = float(np.linalg.norm(target))
         if target_speed <= 1e-8:
             return True
         actual_speed = float(np.linalg.norm(actual))
-        if actual_speed < self.config.goal_min_speed_ratio * target_speed:
+        if actual_speed + GOAL_NUMERICAL_TOLERANCE < (
+            self.config.goal_min_speed_ratio * target_speed
+        ):
             return False
-        alignment = float(
-            np.dot(actual, target) / max(actual_speed * target_speed, 1e-12)
+        return bool(
+            np.dot(actual, target) + GOAL_NUMERICAL_TOLERANCE
+            >= self.config.goal_min_velocity_alignment
+            * actual_speed
+            * target_speed
         )
-        return alignment >= self.config.goal_min_velocity_alignment
 
     @property
     def specific_orbital_energy(self) -> float:
@@ -689,7 +697,7 @@ class OrbitalSwingByEnv(OrbitalSwingByRenderer, gym.Env):
         delta_v_step = 0.0
         body_hit = False
         escaped = False
-        goal_crossed = False
+        goal_reached = False
 
         sub_dt = self.config.dt / self.config.physics_substeps
 
@@ -701,6 +709,7 @@ class OrbitalSwingByEnv(OrbitalSwingByRenderer, gym.Env):
             self._last_actual_throttle = actual_throttle
             self.total_fuel_used += fuel_used
 
+            old_velocity = self.velocity.copy()
             direction = np.array([np.cos(angle), np.sin(angle)], dtype=self._dtype)
             thrust_accel = (
                 self.config.max_thrust_force
@@ -715,29 +724,45 @@ class OrbitalSwingByEnv(OrbitalSwingByRenderer, gym.Env):
             candidate = old_position + velocity_half * sub_dt
 
             lethal_radius = self.config.body_radius + self.config.satellite_radius
-            if self._segment_hits_circle(
+            body_fraction = self._segment_circle_entry_fraction(
                 old_position,
                 candidate,
                 self._body_center,
                 lethal_radius,
-            ):
-                self.position = candidate.astype(self._dtype, copy=False)
+            )
+            if body_fraction is not None:
+                self.position = (
+                    old_position + body_fraction * (candidate - old_position)
+                ).astype(self._dtype, copy=False)
                 self.velocity = velocity_half.astype(self._dtype, copy=False)
+                self._refund_unused_fuel(fuel_used, body_fraction)
+                delta_v_step += (
+                    float(np.linalg.norm(thrust_accel))
+                    * sub_dt
+                    * body_fraction
+                )
+                self.closest_approach = min(
+                    self.closest_approach, self.distance_to_body
+                )
                 body_hit = True
                 break
 
-            if self._segment_leaves_square(old_position, candidate):
-                self.position = candidate.astype(self._dtype, copy=False)
+            escape_fraction = self._segment_square_exit_fraction(
+                old_position, candidate
+            )
+            if escape_fraction is not None:
+                self.position = (
+                    old_position + escape_fraction * (candidate - old_position)
+                ).astype(self._dtype, copy=False)
                 self.velocity = velocity_half.astype(self._dtype, copy=False)
+                self._refund_unused_fuel(fuel_used, escape_fraction)
+                delta_v_step += (
+                    float(np.linalg.norm(thrust_accel))
+                    * sub_dt
+                    * escape_fraction
+                )
                 escaped = True
                 break
-
-            goal_crossed = goal_crossed or self._segment_hits_circle(
-                old_position,
-                candidate,
-                self.goal,
-                self.config.goal_radius,
-            )
 
             self.position = candidate.astype(self._dtype, copy=False)
             accel_end = self._gravity_acceleration(self.position) + thrust_accel
@@ -749,6 +774,59 @@ class OrbitalSwingByEnv(OrbitalSwingByRenderer, gym.Env):
                 escaped = True
                 break
 
+            goal_fraction = self._segment_circle_entry_fraction(
+                old_position,
+                candidate,
+                self.goal,
+                self.config.goal_radius,
+            )
+            matched_fraction: float | None = None
+            matched_velocity: Array | None = None
+            if goal_fraction is not None:
+                event_velocity = old_velocity + goal_fraction * (
+                    self.velocity - old_velocity
+                )
+                if (
+                    not self.config.goal_requires_velocity_match
+                    or self.velocity_matches_goal(event_velocity)
+                ):
+                    matched_fraction = goal_fraction
+                    matched_velocity = event_velocity
+
+            endpoint_matches = (
+                self.distance_to_goal
+                <= self.config.goal_radius + GOAL_NUMERICAL_TOLERANCE
+                and (
+                    not self.config.goal_requires_velocity_match
+                    or self.velocity_matches_goal()
+                )
+            )
+            if matched_fraction is None and endpoint_matches:
+                matched_fraction = 1.0
+                matched_velocity = self.velocity.copy()
+
+            if matched_fraction is not None:
+                goal_reached = True
+                if self.terminate_at_goal:
+                    self.position = (
+                        old_position
+                        + matched_fraction * (candidate - old_position)
+                    ).astype(self._dtype, copy=False)
+                    assert matched_velocity is not None
+                    self.velocity = matched_velocity.astype(
+                        self._dtype, copy=False
+                    )
+                    self._refund_unused_fuel(fuel_used, matched_fraction)
+                    delta_v_step += (
+                        float(np.linalg.norm(thrust_accel))
+                        * sub_dt
+                        * matched_fraction
+                    )
+                    self.closest_approach = min(
+                        self.closest_approach, self.distance_to_body
+                    )
+                    break
+
             delta_v_step += float(np.linalg.norm(thrust_accel)) * sub_dt
             self.closest_approach = min(self.closest_approach, self.distance_to_body)
 
@@ -756,17 +834,18 @@ class OrbitalSwingByEnv(OrbitalSwingByRenderer, gym.Env):
         self.dead = bool(body_hit)
         self.escaped = bool(escaped)
 
-        position_success = goal_crossed or self.distance_to_goal <= self.config.goal_radius
-        velocity_success = (
-            True
-            if not self.config.goal_requires_velocity_match
-            else self.velocity_matches_goal()
+        current_goal_match = (
+            self.distance_to_goal
+            <= self.config.goal_radius + GOAL_NUMERICAL_TOLERANCE
+            and (
+                not self.config.goal_requires_velocity_match
+                or self.velocity_matches_goal()
+            )
         )
         self.success = bool(
             not self.dead
             and not self.escaped
-            and position_success
-            and velocity_success
+            and (goal_reached or current_goal_match)
         )
 
         self.total_delta_v += delta_v_step
@@ -861,22 +940,33 @@ class OrbitalSwingByEnv(OrbitalSwingByRenderer, gym.Env):
             target_velocity = desired[..., 2:]
             actual_speed = np.linalg.norm(actual_velocity, axis=-1)
             target_speed = np.linalg.norm(target_velocity, axis=-1)
-            aligned = np.sum(actual_velocity * target_velocity, axis=-1) >= (
-                self.config.goal_min_velocity_alignment
+            aligned = (
+                np.sum(actual_velocity * target_velocity, axis=-1)
+                + GOAL_NUMERICAL_TOLERANCE
+                >= self.config.goal_min_velocity_alignment
                 * actual_speed
                 * target_speed
             )
-            fast_enough = actual_speed >= (
-                self.config.goal_min_speed_ratio * target_speed
+            fast_enough = (
+                actual_speed + GOAL_NUMERICAL_TOLERANCE
+                >= self.config.goal_min_speed_ratio * target_speed
             )
             directed = np.where(
                 target_speed <= 1e-8, True, aligned & fast_enough
             )
-            success = (position_distance <= self.config.goal_radius) & (
-                velocity_distance <= self.config.goal_velocity_tolerance
+            success = (
+                position_distance
+                <= self.config.goal_radius + GOAL_NUMERICAL_TOLERANCE
+            ) & (
+                velocity_distance
+                <= self.config.goal_velocity_tolerance
+                + GOAL_NUMERICAL_TOLERANCE
             ) & directed
         else:
-            success = position_distance <= self.config.goal_radius
+            success = (
+                position_distance
+                <= self.config.goal_radius + GOAL_NUMERICAL_TOLERANCE
+            )
 
         rewards = np.where(
             success,
@@ -1139,12 +1229,16 @@ class OrbitalSwingByEnv(OrbitalSwingByRenderer, gym.Env):
     def _gravity_potential(self, position: Array) -> float:
         distance = float(np.linalg.norm(np.asarray(position) - self._body_center))
         mu = float(self.config.gravitational_parameter)
-        if distance <= 1e-12:
-            return -np.inf
         model = self.config.canonical_gravity_model
         if model == "newtonian":
-            softened = np.sqrt(distance**2 + self.config.gravity_softening**2)
-            return float(-mu / softened)
+            # Exact potential for the softened inverse-square acceleration
+            # mu / (r^2 + eps^2), with Phi(infinity) = 0.
+            eps = float(self.config.gravity_softening)
+            return float(
+                -mu / eps * np.arctan2(eps, max(distance, 0.0))
+            )
+        if distance <= 1e-12:
+            return -np.inf
         gap = max(
             distance - self.config.schwarzschild_radius,
             self.config.gravity_softening,
@@ -1174,12 +1268,76 @@ class OrbitalSwingByEnv(OrbitalSwingByRenderer, gym.Env):
         self.fuel = max(0.0, self.fuel - fuel_used)
         return float(actual_throttle), float(fuel_used)
 
+    def _refund_unused_fuel(
+        self, fuel_used: float, used_fraction: float
+    ) -> None:
+        """Refund the unused part of a substep stopped by a physical event."""
+        fraction = float(np.clip(used_fraction, 0.0, 1.0))
+        refund = float(fuel_used) * (1.0 - fraction)
+        if refund <= 0.0:
+            return
+        self.fuel = min(self.config.fuel_capacity, self.fuel + refund)
+        self.total_fuel_used = max(0.0, self.total_fuel_used - refund)
+
     def _segment_leaves_square(self, start: Array, end: Array) -> bool:
-        del start
+        return self._segment_square_exit_fraction(start, end) is not None
+
+    def _segment_square_exit_fraction(
+        self, start: Array, end: Array
+    ) -> float | None:
+        """Return the first segment fraction that reaches the arena boundary."""
         margin = self.config.satellite_radius
         low = self.config.arena_low + margin
         high = self.config.arena_high - margin
-        return bool(np.any(end < low) or np.any(end > high))
+        start64 = np.asarray(start, dtype=np.float64)
+        end64 = np.asarray(end, dtype=np.float64)
+        delta = end64 - start64
+        fractions: list[float] = []
+        for axis in range(2):
+            if end64[axis] < low and delta[axis] < 0.0:
+                fractions.append(
+                    float((low - start64[axis]) / delta[axis])
+                )
+            elif end64[axis] > high and delta[axis] > 0.0:
+                fractions.append(
+                    float((high - start64[axis]) / delta[axis])
+                )
+        if not fractions:
+            return None
+        return float(np.clip(min(fractions), 0.0, 1.0))
+
+    @staticmethod
+    def _segment_circle_entry_fraction(
+        start: Array,
+        end: Array,
+        center: Array,
+        radius: float,
+    ) -> float | None:
+        """Return the first fraction where a segment enters a circle."""
+        start64 = np.asarray(start, dtype=np.float64)
+        segment = np.asarray(end, dtype=np.float64) - start64
+        offset = start64 - np.asarray(center, dtype=np.float64)
+        radius_sq = float(radius) ** 2
+        if float(np.dot(offset, offset)) <= radius_sq:
+            return 0.0
+        a = float(np.dot(segment, segment))
+        if a <= 1e-16:
+            return None
+        b = 2.0 * float(np.dot(offset, segment))
+        c = float(np.dot(offset, offset)) - radius_sq
+        discriminant = b * b - 4.0 * a * c
+        if discriminant < -1e-14:
+            return None
+        root = float(np.sqrt(max(discriminant, 0.0)))
+        fractions = [
+            value
+            for value in (
+                (-b - root) / (2.0 * a),
+                (-b + root) / (2.0 * a),
+            )
+            if 0.0 <= value <= 1.0
+        ]
+        return min(fractions) if fractions else None
 
     @staticmethod
     def _segment_hits_circle(
@@ -1188,15 +1346,12 @@ class OrbitalSwingByEnv(OrbitalSwingByRenderer, gym.Env):
         center: Array,
         radius: float,
     ) -> bool:
-        segment = end - start
-        squared_length = float(np.dot(segment, segment))
-        if squared_length <= 1e-16:
-            closest = start
-        else:
-            t = float(np.dot(center - start, segment) / squared_length)
-            t = float(np.clip(t, 0.0, 1.0))
-            closest = start + t * segment
-        return bool(np.linalg.norm(closest - center) <= radius)
+        return (
+            OrbitalSwingByEnv._segment_circle_entry_fraction(
+                start, end, center, radius
+            )
+            is not None
+        )
 
     # ------------------------------------------------------------------
     # Reward, observation, and info
@@ -1254,6 +1409,7 @@ class OrbitalSwingByEnv(OrbitalSwingByRenderer, gym.Env):
         gravity = self._gravity_acceleration(self.position)
         info = {
             "is_success": bool(self.success),
+            "success": bool(self.success),
             "dead": bool(self.dead),
             "escaped": bool(self.escaped),
             "termination_reason": termination_reason,
@@ -1261,7 +1417,8 @@ class OrbitalSwingByEnv(OrbitalSwingByRenderer, gym.Env):
             "position": self.position.copy(),
             "velocity": self.velocity.copy(),
             "speed": float(np.linalg.norm(self.velocity)),
-            "goal": self.goal.copy(),
+            "goal": self.desired_goal,
+            "goal_position": self.goal.copy(),
             "goal_velocity": self.goal_velocity.copy(),
             "distance_to_goal": self.distance_to_goal,
             "velocity_error": self.velocity_error,

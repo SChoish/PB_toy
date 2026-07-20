@@ -567,5 +567,28 @@ class CarRaceRenderTest(unittest.TestCase):
         env.close()
 
 
+class CarRaceFixedTaskApiTest(unittest.TestCase):
+    def test_all_fixed_tasks_are_environment_owned(self):
+        for task_mode in ("navigation", "lap"):
+            env = CarRaceEnv(
+                CarRaceConfig(task_mode=task_mode, checkpoint_count=5),
+                observation_mode="state",
+            )
+            for task_id in range(1, env.num_tasks + 1):
+                observation, info = env.reset(options={"task_id": task_id})
+                self.assertTrue(env.observation_space.contains(observation))
+                self.assertEqual(info["task_id"], task_id)
+                self.assertEqual(np.asarray(info["goal"]).shape, (4,))
+                self.assertEqual(info["success"], info["is_success"])
+            conflict = (
+                {"task_id": 1, "position": (0.575, 0.0)}
+                if task_mode == "navigation"
+                else {"task_id": 1, "direction": 1}
+            )
+            with self.assertRaisesRegex(ValueError, "cannot be combined"):
+                env.reset(options=conflict)
+            env.close()
+
+
 if __name__ == "__main__":
     unittest.main()

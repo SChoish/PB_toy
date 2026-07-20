@@ -6,6 +6,8 @@ import numpy as np
 
 from agents import DEFAULT_CONFIGS
 from car_race.datasets import (
+    CarRaceDQCDataset,
+    CarRaceTRLDataset,
     goal_success,
     load_car_race_dataset,
     load_car_race_dqc_dataset,
@@ -425,6 +427,64 @@ class CarRaceDatasetLoaderTest(unittest.TestCase):
         cfg = DEFAULT_CONFIGS["dqc"]()
         self.assertEqual(cfg["backup_horizon"], 25)
         self.assertEqual(cfg["policy_chunk_size"], 5)
+
+
+class SequenceAdapterTimeIndexTest(unittest.TestCase):
+    def setUp(self):
+        self.observations = np.zeros((6, 4), dtype=np.float32)
+        self.next_observations = np.zeros((6, 4), dtype=np.float32)
+        self.observations[:, 0] = np.arange(6)
+        self.next_observations[:, 0] = np.arange(1, 7)
+        self.actions = np.stack(
+            [np.arange(6), -np.arange(6)], axis=-1
+        ).astype(np.float32)
+        self.episode_ends = np.full(6, 5, dtype=np.int64)
+        self.valid_indices = np.array([0], dtype=np.int64)
+
+    def test_trl_offsets_match_regular_transition_states(self):
+        dataset = CarRaceTRLDataset(
+            self.observations,
+            self.actions,
+            self.next_observations,
+            self.episode_ends,
+            self.valid_indices,
+            {"actor_p_randomgoal": 0.0},
+        )
+        batch = dataset.sample(np.random.default_rng(3), 1)
+        value_offset = int(batch["value_offsets"][0])
+        midpoint_offset = int(batch["value_midpoint_offsets"][0])
+        self.assertEqual(float(batch["value_goals"][0, 0]), value_offset)
+        self.assertEqual(
+            float(batch["value_midpoint_observations"][0, 0]),
+            midpoint_offset,
+        )
+        self.assertGreater(midpoint_offset, 0)
+        self.assertLess(midpoint_offset, value_offset)
+
+    def test_dqc_backup_state_is_after_exactly_backup_actions(self):
+        discount = 0.99
+        dataset = CarRaceDQCDataset(
+            self.observations,
+            self.actions,
+            self.next_observations,
+            self.episode_ends,
+            self.valid_indices,
+            {
+                "backup_horizon": 3,
+                "value_p_randomgoal": 0.0,
+                "discount": discount,
+            },
+        )
+        batch = dataset.sample(np.random.default_rng(4), 1)
+        backup = int(batch["high_value_backup_horizon"][0])
+        self.assertEqual(
+            float(batch["high_value_next_observations"][0, 0]), backup
+        )
+        np.testing.assert_array_equal(batch["valids"], np.ones((1, 3)))
+        if batch["high_value_masks"][0] == 0.0:
+            self.assertAlmostEqual(
+                float(batch["high_value_rewards"][0]), discount**backup
+            )
 
 
 if __name__ == "__main__":

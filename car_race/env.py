@@ -82,6 +82,47 @@ MAX_EXTERNAL_SPEEDS: dict[CarRaceMode, float] = {
     "car_race_ice": 0.45,
 }
 
+NUM_FIXED_TASKS = 5
+
+
+def fixed_task_options(
+    task_mode: TaskMode,
+    task_id: int,
+    *,
+    checkpoint_count: int = 8,
+    track_radius: float = 0.575,
+) -> dict[str, Any]:
+    """Return one of the five environment-owned evaluation tasks."""
+    task_id = int(task_id)
+    if not 1 <= task_id <= NUM_FIXED_TASKS:
+        raise ValueError(f"task_id must be in [1, {NUM_FIXED_TASKS}]")
+    if task_mode == "navigation":
+        radius = float(track_radius)
+        diagonal = radius * 0.7071
+        specifications = (
+            ((radius, 0.0), (0.0, radius)),
+            ((0.0, radius), (-radius, 0.0)),
+            ((-radius, 0.0), (0.0, -radius)),
+            ((0.0, -radius), (radius, 0.0)),
+            ((diagonal, diagonal), (-diagonal, -diagonal)),
+        )
+        position, goal = specifications[task_id - 1]
+        return {"position": position, "goal": goal}
+    if task_mode == "lap":
+        specifications = (
+            (0, 1),
+            (0, -1),
+            (checkpoint_count // 2, 1),
+            (max(1, checkpoint_count // 3), -1),
+            (checkpoint_count - 1, 1),
+        )
+        start_checkpoint, direction = specifications[task_id - 1]
+        return {
+            "start_checkpoint": int(start_checkpoint % checkpoint_count),
+            "direction": int(direction),
+        }
+    raise ValueError(f"Unknown task_mode: {task_mode}")
+
 
 def mode_config_kwargs(mode: CarRaceMode) -> dict[str, float]:
     """Physics overrides for a named CarRace mode."""
@@ -240,6 +281,7 @@ class CarRaceEnv(gym.Env):
     """
 
     metadata = {"render_modes": ["human", "rgb_array"], "render_fps": 20}
+    num_tasks = NUM_FIXED_TASKS
 
     def __init__(
         self,
@@ -364,6 +406,7 @@ class CarRaceEnv(gym.Env):
         self._lap_completed = 0
         self._checkpoint_index = 0
         self._waypoint_reached = False
+        self.cur_task_id: int | None = None
         self._checkpoints = self._build_checkpoints()
         self._human_figure: Any = None
         self._human_axis: Any = None
@@ -461,7 +504,31 @@ class CarRaceEnv(gym.Env):
         options: dict[str, Any] | None = None,
     ) -> tuple[Any, dict[str, Any]]:
         super().reset(seed=seed)
-        options = options or {}
+        options = dict(options or {})
+
+        task_id = options.pop("task_id", None)
+        if task_id is not None:
+            task_keys = (
+                ("position", "goal")
+                if self.config.task_mode == "navigation"
+                else ("start_checkpoint", "direction")
+            )
+            conflicts = [key for key in task_keys if key in options]
+            if conflicts:
+                raise ValueError(
+                    "task_id cannot be combined with " + ", ".join(conflicts)
+                )
+            self.cur_task_id = int(task_id)
+            options.update(
+                fixed_task_options(
+                    self.config.task_mode,
+                    self.cur_task_id,
+                    checkpoint_count=self.config.checkpoint_count,
+                    track_radius=self.config.track_radius,
+                )
+            )
+        else:
+            self.cur_task_id = None
 
         self.elapsed_steps = 0
         self.total_impulse = 0.0
@@ -969,6 +1036,7 @@ class CarRaceEnv(gym.Env):
     ) -> dict[str, Any]:
         return {
             "is_success": bool(self.success),
+            "success": bool(self.success),
             "dead": bool(self.dead),
             "termination_reason": termination_reason,
             "position": self.position.copy(),
@@ -991,6 +1059,7 @@ class CarRaceEnv(gym.Env):
             "current_waypoint": self.current_waypoint.copy(),
             "elapsed_steps": int(self.elapsed_steps),
             "task_mode": self.config.task_mode,
+            "task_id": self.cur_task_id,
             "checkpoint_index": (
                 int(self._checkpoint_index)
                 if self.config.task_mode == "lap"

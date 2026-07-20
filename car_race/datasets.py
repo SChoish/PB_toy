@@ -47,6 +47,7 @@ class CarRaceDataset:
     actions: np.ndarray
     next_observations: np.ndarray
     terminals: np.ndarray
+    absorbing: np.ndarray
     commanded_goals: np.ndarray
     episode_ids: np.ndarray
     episode_ends: np.ndarray
@@ -241,7 +242,7 @@ class CarRaceDataset:
         ).astype(np.float32)
         masks = (
             (1.0 - successes)
-            * (1.0 - self.terminals[idxs].astype(np.float32))
+            * (1.0 - self.absorbing[idxs].astype(np.float32))
         ).astype(np.float32)
         path_goal_states = paths[:, -1]
 
@@ -469,6 +470,15 @@ def load_car_race_dataset(
         raw["next_observations"], dtype=np.float32
     )
     terminals = np.asarray(raw["terminals"], dtype=bool)
+    if "deaths" in raw.files:
+        absorbing = np.asarray(raw["deaths"], dtype=bool)
+    elif "healths" in raw.files:
+        absorbing = np.asarray(raw["healths"], dtype=np.float32) <= 0.0
+    else:
+        # Legacy files without failure labels only expose collection boundaries.
+        absorbing = np.zeros_like(terminals)
+    if absorbing.shape != terminals.shape:
+        raise ValueError("deaths/healths must have shape (N,)")
     if raw_observations.ndim != 2 or raw_observations.shape[1] != 8:
         raise ValueError("shared observations must have shape (N, 8)")
     if raw_next_observations.shape != raw_observations.shape:
@@ -550,6 +560,7 @@ def load_car_race_dataset(
         observations = observations[keep]
         actions = actions[keep]
         next_observations = next_observations[keep]
+        absorbing = absorbing[keep]
         synthetic_terminals = synthetic_terminals[keep]
         goals = goals[keep]
         episode_ids = episode_ids[keep]
@@ -568,6 +579,7 @@ def load_car_race_dataset(
         actions=actions,
         next_observations=next_observations,
         terminals=terminals,
+        absorbing=absorbing,
         commanded_goals=goals,
         episode_ids=episode_ids,
         episode_ends=episode_ends,
@@ -668,7 +680,7 @@ class CarRaceTRLDataset(CarRaceGoalSequenceDataset):
         )
         midpoint_indices = np.asarray(
             [
-                rng.integers(int(start), int(goal))
+                rng.integers(int(start) + 1, int(goal) + 1)
                 for start, goal in zip(
                     indices, value_goal_indices, strict=False
                 )
@@ -687,7 +699,7 @@ class CarRaceTRLDataset(CarRaceGoalSequenceDataset):
             "actor_goals": self.next_observations[
                 actor_goal_indices, :4
             ].astype(np.float32),
-            "value_offsets": (value_goal_indices - indices).astype(
+            "value_offsets": (value_goal_indices - indices + 1).astype(
                 np.float32
             ),
             "value_midpoint_offsets": (
@@ -716,18 +728,16 @@ class CarRaceDQCDataset(CarRaceGoalSequenceDataset):
         goals = self._goal_indices(rng, indices, prefix="value")
         horizon = int(self.config.get("backup_horizon", 8))
         ends = self.episode_ends[indices]
-        backup = np.minimum(horizon, ends - indices)
-        goal_offsets = goals - indices
-        backup = np.where(
-            (goal_offsets >= 0) & (goal_offsets < backup),
-            goal_offsets,
-            backup,
-        ).astype(np.int64)
-        next_indices = indices + backup
+        available = ends - indices + 1
+        backup = np.minimum(horizon, available)
+        goal_offsets = goals - indices + 1
+        reaches_goal = (goal_offsets >= 1) & (goal_offsets <= backup)
+        backup = np.where(reaches_goal, goal_offsets, backup).astype(np.int64)
+        next_transition_indices = indices + backup - 1
         chunk_indices = indices[:, None] + np.arange(horizon)[None]
         chunks = self.actions[chunk_indices].reshape(batch_size, -1)
-        valids = (chunk_indices < ends[:, None]).astype(np.float32)
-        success = (backup < horizon).astype(np.float32)
+        valids = (chunk_indices <= ends[:, None]).astype(np.float32)
+        success = reaches_goal.astype(np.float32)
         discount = float(self.config.get("discount", 0.99))
         rewards = np.power(discount, backup).astype(np.float32) * success
         return {
@@ -740,7 +750,7 @@ class CarRaceDQCDataset(CarRaceGoalSequenceDataset):
                 np.float32
             ),
             "high_value_next_observations": self.next_observations[
-                next_indices
+                next_transition_indices
             ].astype(np.float32),
             "high_value_action_chunks": chunks.astype(np.float32),
             "high_value_backup_horizon": backup.astype(np.float32),
@@ -787,7 +797,7 @@ def load_car_race_dqc_dataset(
     base = _load_sequence_base(path, task=task)
     horizon = int(config.get("backup_horizon", 8))
     valid = np.flatnonzero(
-        np.arange(len(base)) + horizon <= base.episode_ends
+        np.arange(len(base)) + horizon - 1 <= base.episode_ends
     ).astype(np.int64)
     if len(valid) == 0:
         raise ValueError("DQC dataset has no full action chunks")

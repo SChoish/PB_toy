@@ -5,8 +5,11 @@ episodes, so saved arrays may be slightly larger than the requested budget.
 Train and validation splits are collected independently with disjoint seeds.
 Navigation and universal lap files share the same physical schema.  One
 ``--task lap`` NPZ is re-annotated for every task from lap_1p through lap_8p.
-"""
+The regular-transition NPZ stores explicit next observations. ``terminals``
+marks collection boundaries; ``successes``, ``deaths``, and ``timeouts`` keep
+the distinct task/MDP meanings needed to build Bellman masks.
 
+"""
 from __future__ import annotations
 
 import argparse
@@ -285,6 +288,9 @@ def _append_transition(
         np.asarray(next_observation, dtype=np.float32)
     )
     store["terminals"].append(bool(terminal))
+    store["successes"].append(bool(info.get("is_success", False)))
+    store["deaths"].append(bool(info.get("dead", False)))
+    store["timeouts"].append(info.get("termination_reason") == "time_limit")
     store["healths"].append(float(info["health"]))
     store["step_impulses"].append(float(info["step_impulse"]))
     store["hazard_contacts"].append(bool(info["hazard_contact"]))
@@ -298,7 +304,14 @@ def _append_transition(
 
 
 def _as_arrays(store: dict[str, list]) -> dict[str, np.ndarray]:
-    bool_keys = {"terminals", "hazard_contacts", "is_lap"}
+    bool_keys = {
+        "terminals",
+        "successes",
+        "deaths",
+        "timeouts",
+        "hazard_contacts",
+        "is_lap",
+    }
     int_keys = {"episode_ids", "lap_directions"}
     arrays: dict[str, np.ndarray] = {}
     for key, values in store.items():

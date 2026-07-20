@@ -23,6 +23,14 @@ class SwingByApiTest(unittest.TestCase):
                 observation, info = env.reset(options={"task_id": task_id})
                 self.assertTrue(env.observation_space.contains(observation))
                 self.assertEqual(info["task_id"], task_id)
+                self.assertEqual(np.asarray(info["goal"]).shape, (4,))
+                np.testing.assert_array_equal(
+                    info["goal"][:2], info["goal_position"]
+                )
+                np.testing.assert_array_equal(
+                    info["goal"][2:], info["goal_velocity"]
+                )
+                self.assertEqual(info["success"], info["is_success"])
             env.close()
 
     def test_rotated_task_reset_rotates_state_velocity_and_goal(self):
@@ -55,6 +63,123 @@ class SwingByApiTest(unittest.TestCase):
         for task in env.task_infos:
             self.assertLess(float(task["init_xy"][0]), 0.0)
             self.assertGreater(float(task["goal_xy"][0]), 0.0)
+        env.close()
+
+    def test_gravity_matches_reported_potential_gradient(self):
+        point = np.array([0.50, 0.20], dtype=np.float64)
+        epsilon = 1e-5
+        for config in (planet_config(), black_hole_config()):
+            env = OrbitalSwingByEnv(config=config, observation_mode="state")
+            numerical = np.zeros(2, dtype=np.float64)
+            for axis in range(2):
+                shift = np.zeros(2, dtype=np.float64)
+                shift[axis] = epsilon
+                numerical[axis] = -(
+                    env._gravity_potential(point + shift)
+                    - env._gravity_potential(point - shift)
+                ) / (2.0 * epsilon)
+            np.testing.assert_allclose(
+                env.gravity_acceleration(point),
+                numerical,
+                rtol=2e-5,
+                atol=2e-6,
+            )
+            env.close()
+
+    def test_ballistic_integrator_conserves_orbital_invariants(self):
+        for config in (planet_config(), black_hole_config()):
+            env = OrbitalSwingByEnv(config=config, observation_mode="state")
+            radius = 0.50
+            if config.body_kind == "planet":
+                denominator = (
+                    radius * radius + config.gravity_softening**2
+                )
+                speed = np.sqrt(
+                    config.gravitational_parameter
+                    * radius
+                    / denominator
+                )
+            else:
+                speed = np.sqrt(
+                    radius
+                    * config.gravitational_parameter
+                    / (radius - config.schwarzschild_radius) ** 2
+                )
+            positions, velocities, diagnostics = env.simulate_ballistic(
+                np.array([radius, 0.0]),
+                np.array([0.0, speed]),
+                horizon_steps=300,
+            )
+            self.assertFalse(diagnostics["collided"])
+            self.assertFalse(diagnostics["escaped"])
+            energies = np.array(
+                [
+                    0.5 * np.dot(velocity, velocity)
+                    + env._gravity_potential(position)
+                    for position, velocity in zip(positions, velocities)
+                ]
+            )
+            momenta = (
+                positions[:, 0] * velocities[:, 1]
+                - positions[:, 1] * velocities[:, 0]
+            )
+            relative_energy_range = np.ptp(energies) / abs(energies.mean())
+            relative_momentum_range = np.ptp(momenta) / abs(momenta.mean())
+            self.assertLess(relative_energy_range, 1e-4)
+            self.assertLess(relative_momentum_range, 1e-4)
+            env.close()
+
+    def test_goal_event_stops_at_first_matching_crossing(self):
+        config = planet_config(
+            gravitational_parameter=0.0,
+            dt=1.0,
+            physics_substeps=1,
+            max_speed=1.0,
+        )
+        env = OrbitalSwingByEnv(config=config, observation_mode="state")
+        env.reset(
+            options={
+                "position": (-0.10, 0.50),
+                "velocity": (0.30, 0.0),
+                "goal": (0.0, 0.50),
+                "goal_velocity": (0.30, 0.0),
+            }
+        )
+        _, _, terminated, _, info = env.step(
+            np.array([0.0, 0.0], dtype=np.float32)
+        )
+        self.assertTrue(terminated)
+        self.assertTrue(info["is_success"])
+        self.assertAlmostEqual(
+            env.distance_to_goal, env.config.goal_radius, places=5
+        )
+        self.assertEqual(
+            env.compute_reward(env.achieved_goal, env.desired_goal),
+            env.config.success_reward,
+        )
+        env.close()
+
+    def test_body_collision_stops_at_capture_surface(self):
+        config = planet_config(
+            gravitational_parameter=0.0,
+            physics_substeps=1,
+        )
+        env = OrbitalSwingByEnv(config=config, observation_mode="state")
+        env.reset(
+            options={
+                "position": (0.21, 0.0),
+                "velocity": (-3.0, 0.0),
+                "goal": (0.0, 0.50),
+                "goal_velocity": (0.0, 0.0),
+            }
+        )
+        _, _, terminated, _, info = env.step(
+            np.array([0.0, 0.0], dtype=np.float32)
+        )
+        self.assertTrue(terminated)
+        self.assertTrue(info["dead"])
+        capture_radius = config.body_radius + config.satellite_radius
+        self.assertAlmostEqual(env.distance_to_body, capture_radius, places=6)
         env.close()
 
     def test_slow_capture_rejects_stationary_velocity(self):

@@ -5,6 +5,8 @@ import unittest
 import numpy as np
 
 from swingby.datasets import (
+    SwingbyDQCDataset,
+    SwingbyTRLDataset,
     CARTESIAN_ACTION_ENCODING,
     denormalize_actions,
     load_swingby_dataset,
@@ -112,6 +114,64 @@ class SwingByDatasetTest(unittest.TestCase):
                 np.any(np.all(np.isclose(fixed_goals, goal), axis=1))
             )
         self.assertTrue(np.all(batch["value_offsets"] > 0))
+
+
+class SwingbySequenceAdapterTimeIndexTest(unittest.TestCase):
+    def setUp(self):
+        self.observations = np.zeros((6, 5), dtype=np.float32)
+        self.next_observations = np.zeros((6, 5), dtype=np.float32)
+        self.observations[:, 0] = np.arange(6)
+        self.next_observations[:, 0] = np.arange(1, 7)
+        self.actions = np.stack(
+            [np.arange(6), -np.arange(6)], axis=-1
+        ).astype(np.float32)
+        self.commanded_goals = np.zeros((6, 4), dtype=np.float32)
+        self.commanded_goal_indices = np.full(6, -1, dtype=np.int64)
+        self.episode_ends = np.full(6, 5, dtype=np.int64)
+        self.valid_indices = np.array([0], dtype=np.int64)
+
+    def _make(self, cls, config):
+        return cls(
+            self.observations,
+            self.actions,
+            self.next_observations,
+            self.commanded_goals,
+            self.commanded_goal_indices,
+            self.episode_ends,
+            self.valid_indices,
+            config,
+        )
+
+    def test_trl_and_dqc_offsets_match_regular_transition_states(self):
+        trl = self._make(
+            SwingbyTRLDataset,
+            {"commanded_goal_prob": 0.0},
+        )
+        trl_batch = trl.sample(np.random.default_rng(3), 1)
+        value_offset = int(trl_batch["value_offsets"][0])
+        midpoint_offset = int(trl_batch["value_midpoint_offsets"][0])
+        self.assertEqual(float(trl_batch["value_goals"][0, 0]), value_offset)
+        self.assertEqual(
+            float(trl_batch["value_midpoint_observations"][0, 0]),
+            midpoint_offset,
+        )
+        self.assertGreater(midpoint_offset, 0)
+        self.assertLess(midpoint_offset, value_offset)
+
+        dqc = self._make(
+            SwingbyDQCDataset,
+            {
+                "backup_horizon": 3,
+                "commanded_goal_prob": 0.0,
+                "discount": 0.99,
+            },
+        )
+        dqc_batch = dqc.sample(np.random.default_rng(4), 1)
+        backup = int(dqc_batch["high_value_backup_horizon"][0])
+        self.assertEqual(
+            float(dqc_batch["high_value_next_observations"][0, 0]), backup
+        )
+        np.testing.assert_array_equal(dqc_batch["valids"], np.ones((1, 3)))
 
 
 if __name__ == "__main__":

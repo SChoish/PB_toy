@@ -21,7 +21,13 @@ from .datasets import (
     load_car_race_dqc_dataset,
     load_car_race_trl_dataset,
 )
-from .env import GRAVITY_STRENGTHS, CarRaceConfig, CarRaceEnv, mode_config_kwargs
+from .env import (
+    GRAVITY_STRENGTHS,
+    CarRaceConfig,
+    CarRaceEnv,
+    fixed_task_options,
+    mode_config_kwargs,
+)
 from .generate_dataset import dataset_stem
 
 ENVS = tuple(GRAVITY_STRENGTHS)
@@ -32,39 +38,12 @@ LAP_TASK_SCHEMA = "lap"
 # Older lap runs used these schema labels.
 _LEGACY_LAP_TASK_SCHEMAS = frozenset({LAP_TASK_SCHEMA, "lap_v2", "waypoint_v2"})
 
-# Fixed navigation eval suite on the safe ring (matches demo geometry).
-_R = 0.575
-NAV_EVAL_OPTIONS: dict[int, dict] = {
-    1: {"position": (_R, 0.0), "goal": (0.0, _R)},
-    2: {"position": (0.0, _R), "goal": (-_R, 0.0)},
-    3: {"position": (-_R, 0.0), "goal": (0.0, -_R)},
-    4: {"position": (0.0, -_R), "goal": (_R, 0.0)},
-    5: {"position": (_R * 0.7071, _R * 0.7071), "goal": (-_R * 0.7071, -_R * 0.7071)},
-}
-
-
 def resolve_task(task: str) -> tuple[str, int]:
     if task == "navigation":
         return "navigation", 8
     if task not in LAP_CHECKPOINT_COUNTS:
         raise ValueError(f"Unknown task={task!r}; choose from {TASKS}")
     return "lap", LAP_CHECKPOINT_COUNTS[task]
-
-
-def lap_eval_options(task_id: int, checkpoint_count: int) -> dict:
-    """Five reproducible lap starts covering both directions."""
-    specs = (
-        (0, 1),
-        (0, -1),
-        (checkpoint_count // 2, 1),
-        (max(1, checkpoint_count // 3), -1),
-        (checkpoint_count - 1, 1),
-    )
-    start_checkpoint, direction = specs[task_id - 1]
-    return {
-        "start_checkpoint": int(start_checkpoint % checkpoint_count),
-        "direction": int(direction),
-    }
 
 
 def _make_eval_env(
@@ -288,24 +267,28 @@ def _eval_reset_options(
     """Fixed task options + seed-dependent heading noise; unique reset seed."""
     reset_seed = int(episode_seed) * 10007 + int(task_id)
     local_rng = np.random.default_rng(reset_seed)
+    task_mode = "navigation" if task == "navigation" else "lap"
+    options = fixed_task_options(
+        task_mode,
+        task_id,
+        checkpoint_count=checkpoint_count,
+    )
     if task == "navigation":
-        options = dict(NAV_EVAL_OPTIONS[task_id])
         position = np.asarray(options["position"], dtype=np.float64)
         goal = np.asarray(options["goal"], dtype=np.float64)
         default_heading = float(
             np.arctan2(goal[1] - position[1], goal[0] - position[0])
         )
     else:
-        options = lap_eval_options(task_id, checkpoint_count)
         start_index = int(options["start_checkpoint"])
         direction = int(options["direction"])
         radial_angle = 2.0 * np.pi * start_index / checkpoint_count
         default_heading = radial_angle + direction * np.pi / 2.0
-    options["heading"] = float(
+    heading = float(
         default_heading
         + local_rng.uniform(-_EVAL_HEADING_NOISE, _EVAL_HEADING_NOISE)
     )
-    return options, reset_seed
+    return {"task_id": int(task_id), "heading": heading}, reset_seed
 
 
 def evaluate(
@@ -583,17 +566,13 @@ def render_agent(
     env = _make_eval_env(
         env_name, task, render_mode="rgb_array", render_size=render_size
     )
-    _, checkpoint_count = resolve_task(task)
     rng = np.random.default_rng(seed)
     paths: list[pathlib.Path] = []
     try:
         for task_id in task_ids:
             env_path = env_dir / f"task{task_id}.mp4"
             overlay_path = overlay_dir / f"task{task_id}.mp4"
-            if task == "navigation":
-                options = dict(NAV_EVAL_OPTIONS[task_id])
-            else:
-                options = lap_eval_options(task_id, checkpoint_count)
+            options = {"task_id": int(task_id)}
             ob, info = env.reset(
                 seed=int(rng.integers(0, 1_000_000)), options=options
             )

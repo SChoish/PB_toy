@@ -7,6 +7,11 @@ from pathlib import Path
 
 import numpy as np
 
+try:
+    from .config import GOAL_NUMERICAL_TOLERANCE
+except ImportError:  # script-style: `cd swingby && python ...`
+    from config import GOAL_NUMERICAL_TOLERANCE
+
 
 LEGACY_ACTION_ENCODING = "angle_throttle"
 CARTESIAN_ACTION_ENCODING = "cartesian_thrust"
@@ -85,14 +90,22 @@ def goal_success(
     vel = np.linalg.norm(actual_velocity - target_velocity, axis=-1)
     actual_speed = np.linalg.norm(actual_velocity, axis=-1)
     target_speed = np.linalg.norm(target_velocity, axis=-1)
-    aligned = np.sum(actual_velocity * target_velocity, axis=-1) >= (
-        goal_min_velocity_alignment * actual_speed * target_speed
+    aligned = (
+        np.sum(actual_velocity * target_velocity, axis=-1)
+        + GOAL_NUMERICAL_TOLERANCE
+        >= goal_min_velocity_alignment * actual_speed * target_speed
     )
-    fast_enough = actual_speed >= goal_min_speed_ratio * target_speed
+    fast_enough = (
+        actual_speed + GOAL_NUMERICAL_TOLERANCE
+        >= goal_min_speed_ratio * target_speed
+    )
     directed = np.where(target_speed <= 1e-8, True, aligned & fast_enough)
     return (
-        (pos <= goal_radius)
-        & (vel <= goal_velocity_tolerance)
+        (pos <= goal_radius + GOAL_NUMERICAL_TOLERANCE)
+        & (
+            vel
+            <= goal_velocity_tolerance + GOAL_NUMERICAL_TOLERANCE
+        )
         & directed
     )
 
@@ -131,6 +144,7 @@ class SwingbyDataset:
     actions: np.ndarray
     next_observations: np.ndarray
     terminals: np.ndarray
+    absorbing: np.ndarray
     commanded_goals: np.ndarray
     successes: np.ndarray
     commanded_goal_indices: np.ndarray
@@ -275,7 +289,7 @@ class SwingbyDataset:
         ).astype(np.float32)
         masks = (
             (1.0 - batch_successes)
-            * (1.0 - self.terminals[idxs].astype(np.float32))
+            * (1.0 - self.absorbing[idxs].astype(np.float32))
         ).astype(np.float32)
         path_goal_states = paths[:, -1]
 
@@ -381,7 +395,7 @@ class SwingbyTRLDataset(SwingbyGoalSequenceDataset):
         value_goal_indices, goal_values = self._goal_targets(rng, indices)
         midpoint_indices = np.asarray(
             [
-                rng.integers(int(start), int(goal))
+                rng.integers(int(start) + 1, int(goal) + 1)
                 for start, goal in zip(
                     indices, value_goal_indices, strict=False
                 )
@@ -396,7 +410,7 @@ class SwingbyTRLDataset(SwingbyGoalSequenceDataset):
             ),
             "value_goals": goal_values.astype(np.float32),
             "actor_goals": goal_values.astype(np.float32),
-            "value_offsets": (value_goal_indices - indices).astype(
+            "value_offsets": (value_goal_indices - indices + 1).astype(
                 np.float32
             ),
             "value_midpoint_offsets": (
@@ -425,18 +439,16 @@ class SwingbyDQCDataset(SwingbyGoalSequenceDataset):
         goals, goal_values = self._goal_targets(rng, indices)
         horizon = int(self.config.get("backup_horizon", 8))
         ends = self.episode_ends[indices]
-        backup = np.minimum(horizon, ends - indices)
-        goal_offsets = goals - indices
-        backup = np.where(
-            (goal_offsets >= 0) & (goal_offsets < backup),
-            goal_offsets,
-            backup,
-        ).astype(np.int64)
-        next_indices = indices + backup
+        available = ends - indices + 1
+        backup = np.minimum(horizon, available)
+        goal_offsets = goals - indices + 1
+        reaches_goal = (goal_offsets >= 1) & (goal_offsets <= backup)
+        backup = np.where(reaches_goal, goal_offsets, backup).astype(np.int64)
+        next_transition_indices = indices + backup - 1
         chunk_indices = indices[:, None] + np.arange(horizon)[None]
         chunks = self.actions[chunk_indices].reshape(batch_size, -1)
-        valids = (chunk_indices < ends[:, None]).astype(np.float32)
-        success = (backup < horizon).astype(np.float32)
+        valids = (chunk_indices <= ends[:, None]).astype(np.float32)
+        success = reaches_goal.astype(np.float32)
         discount = float(self.config.get("discount", 0.99))
         rewards = np.power(discount, backup).astype(np.float32) * success
         return {
@@ -446,8 +458,8 @@ class SwingbyDQCDataset(SwingbyGoalSequenceDataset):
                 np.float32
             ),
             "high_value_goals": goal_values.astype(np.float32),
-            "high_value_next_observations": self.observations[
-                next_indices
+            "high_value_next_observations": self.next_observations[
+                next_transition_indices
             ].astype(np.float32),
             "high_value_action_chunks": chunks.astype(np.float32),
             "high_value_backup_horizon": backup.astype(np.float32),
@@ -511,6 +523,17 @@ def load_swingby_dataset(
     )
     next_observations = np.asarray(raw["next_observations"], dtype=np.float32)
     terminals = np.asarray(raw["terminals"], dtype=bool)
+    deaths = (
+        np.asarray(raw["deaths"], dtype=bool)
+        if "deaths" in raw.files
+        else np.zeros_like(terminals)
+    )
+    escapes = (
+        np.asarray(raw["escapes"], dtype=bool)
+        if "escapes" in raw.files
+        else np.zeros_like(terminals)
+    )
+    absorbing = deaths | escapes
     commanded_goals = np.asarray(raw["commanded_goals"], dtype=np.float32)
     # Recompute canonical success labels from the current goal contract.
     # Older files used only a loose Euclidean velocity tolerance.
@@ -523,6 +546,8 @@ def load_swingby_dataset(
         goal_min_velocity_alignment=goal_min_velocity_alignment,
     )
 
+    if absorbing.shape != terminals.shape:
+        raise ValueError("deaths/escapes must have shape (N,)")
     if observations.ndim != 2 or observations.shape[1] != 5:
         raise ValueError("observations must have shape (N, 5)")
     if next_observations.shape != observations.shape:
@@ -573,6 +598,7 @@ def load_swingby_dataset(
         actions=actions,
         next_observations=next_observations,
         terminals=terminals,
+        absorbing=absorbing,
         commanded_goals=commanded_goals,
         successes=successes,
         commanded_goal_indices=commanded_goal_indices,
@@ -603,7 +629,7 @@ def _load_goal_sequence_base(
     for episode_id in np.unique(data.episode_ids):
         indices = np.flatnonzero(data.episode_ids == episode_id)
         end = int(indices[-1])
-        last = end + 1 - min_future
+        last = end + 2 - min_future
         if last > int(indices[0]):
             valid_parts.append(
                 np.arange(int(indices[0]), last, dtype=np.int64)

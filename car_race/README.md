@@ -35,6 +35,11 @@ env.close()
 ```
 
 Actions are normalized `[steering, throttle_or_brake]` in `[-1, 1]`.
+The dynamics use a kinematic bicycle integrated at `dt=0.05` with 5 substeps;
+world-space field/drift velocity is observed explicitly, so the state remains
+Markov even on ice. Navigation goals are `[goal_x, goal_y, 0, 0]` and require
+position only.
+
 Navigation state layout:
 
 ```text
@@ -54,6 +59,11 @@ ordered hit.
 
 Observation modes: `state`, `state_goal`, `goal_dict`.
 Tasks: `navigation` | `lap_1p` … `lap_8p`.
+
+Each task mode owns five fixed evaluation starts. Use
+`observation, info = env.reset(options={"task_id": 1})`; task IDs are in
+`[1, 5]`, `info["goal"]` is the current 4-D agent goal, and
+`info["success"]` is the OGBench-style success flag.
 
 Ice uses reduced cornering grip (`0.15`), longitudinal acceleration/braking grip
 (`0.45`), and steering response (`0.465`). The chassis can point into a turn while

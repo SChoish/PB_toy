@@ -9,12 +9,13 @@ NPZ schema
 observations        [T, 5]  # x, y, vx, vy, fuel_fraction
 actions             [T, 2]  # thrust angle, throttle
 next_observations   [T, 5]
-terminals           [T]
+terminals           [T]     # trajectory boundary (success/failure/timeout)
 commanded_goals     [T, 4]  # gx, gy, gvx, gvy
 episode_ids         [T]
 successes           [T]
 deaths              [T]
 escapes             [T]
+timeouts            [T]
 task_family_ids     [T]     # fixed evaluation family, 1..5
 task_rotations      [T]     # train-only inner-band rotation in radians
 dataset_schema      scalar  # "swingby" or "ballistic_v1"
@@ -115,11 +116,12 @@ def _append_transition(
     store["successes"].append(bool(info.get("is_success", False)))
     store["deaths"].append(bool(info.get("dead", False)))
     store["escapes"].append(bool(info.get("escaped", False)))
+    store["timeouts"].append(info.get("termination_reason") == "time_limit")
     store["fuels"].append(float(info.get("fuel_fraction", 0.0)))
 
 
 def _as_arrays(store: dict[str, list]) -> dict[str, np.ndarray]:
-    bool_keys = {"terminals", "successes", "deaths", "escapes"}
+    bool_keys = {"terminals", "successes", "deaths", "escapes", "timeouts"}
     int_keys = {"episode_ids", "task_family_ids"}
     arrays: dict[str, np.ndarray] = {}
     for key, values in store.items():

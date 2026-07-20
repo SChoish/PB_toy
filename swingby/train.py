@@ -114,9 +114,12 @@ def _temp_metric_prefix(temperature: float) -> str:
 
 
 def _format_eval_goal(info: dict) -> np.ndarray:
+    goal = np.asarray(info["goal"], dtype=np.float32).reshape(-1)
+    if goal.size >= 4:
+        return goal[:4].astype(np.float32, copy=True)
     return np.concatenate(
         [
-            np.asarray(info["goal"], dtype=np.float32).reshape(-1)[:2],
+            goal[:2],
             np.asarray(info["goal_velocity"], dtype=np.float32).reshape(-1)[:2],
         ]
     ).astype(np.float32)

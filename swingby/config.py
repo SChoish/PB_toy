@@ -19,6 +19,9 @@ GravityModel = Literal[
     "pseudo_schwarzschild",
 ]
 
+# Shared epsilon for float32 online/offline goal-boundary agreement.
+GOAL_NUMERICAL_TOLERANCE = 1e-6
+
 GRAVITY_MODEL_ALIASES: dict[str, str] = {
     "newtonian": "newtonian",
     "inverse_square": "newtonian",
