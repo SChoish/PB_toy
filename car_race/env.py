@@ -232,9 +232,11 @@ class CarRaceEnv(gym.Env):
     """Goal navigation and one-lap racing on an annular safe track.
 
     Actions are normalized ``[steering, throttle/brake]`` in ``[-1, 1]^2``.
-    State observations are
+    State observations start with
     ``[x, y, task_progress, direction, cos(heading), sin(heading), speed,
-    health]``.  The first four coordinates form the goal representation.
+    health, external_velocity_x, external_velocity_y]``.  Lap observations
+    append ``[waypoint_index, waypoint_reached, waypoint_x, waypoint_y]``.
+    The first four coordinates form the achieved-goal representation.
     """
 
     metadata = {"render_modes": ["human", "rgb_array"], "render_fps": 20}
@@ -294,6 +296,25 @@ class CarRaceEnv(gym.Env):
             ],
             dtype=self._dtype,
         )
+        if self.config.task_mode == "lap":
+            state_low = np.concatenate(
+                [
+                    state_low,
+                    np.array(
+                        [0.0, 0.0, self.config.arena_low, self.config.arena_low],
+                        dtype=self._dtype,
+                    ),
+                ]
+            )
+            state_high = np.concatenate(
+                [
+                    state_high,
+                    np.array(
+                        [1.0, 1.0, self.config.arena_high, self.config.arena_high],
+                        dtype=self._dtype,
+                    ),
+                ]
+            )
         goal_low = np.array(
             [self.config.arena_low, self.config.arena_low, 0.0, -1.0],
             dtype=self._dtype,
@@ -342,6 +363,7 @@ class CarRaceEnv(gym.Env):
         self._lap_start_index = 0
         self._lap_completed = 0
         self._checkpoint_index = 0
+        self._waypoint_reached = False
         self._checkpoints = self._build_checkpoints()
         self._human_figure: Any = None
         self._human_axis: Any = None
@@ -349,7 +371,7 @@ class CarRaceEnv(gym.Env):
 
     @property
     def state(self) -> Array:
-        return np.array(
+        physical = np.array(
             [
                 self.position[0],
                 self.position[1],
@@ -364,6 +386,25 @@ class CarRaceEnv(gym.Env):
             ],
             dtype=self._dtype,
         )
+        if self.config.task_mode != "lap":
+            return physical
+        active_ordinal = (
+            min(self._lap_completed + 1, self.config.checkpoint_count)
+            % self.config.checkpoint_count
+        )
+        waypoint_index = float(
+            active_ordinal / max(self.config.checkpoint_count - 1, 1)
+        )
+        task = np.array(
+            [
+                waypoint_index,
+                float(self._waypoint_reached),
+                self.current_waypoint[0],
+                self.current_waypoint[1],
+            ],
+            dtype=self._dtype,
+        )
+        return np.concatenate([physical, task]).astype(self._dtype)
 
     @property
     def task_progress(self) -> float:
@@ -386,8 +427,17 @@ class CarRaceEnv(gym.Env):
     @property
     def desired_goal(self) -> Array:
         if self.config.task_mode == "lap":
+            target_progress = min(
+                (self._lap_completed + 1) / self.config.checkpoint_count,
+                1.0,
+            )
             return np.array(
-                [self.goal[0], self.goal[1], 1.0, float(self._lap_direction)],
+                [
+                    self.current_waypoint[0],
+                    self.current_waypoint[1],
+                    target_progress,
+                    float(self._lap_direction),
+                ],
                 dtype=self._dtype,
             )
         return np.array(
@@ -418,6 +468,7 @@ class CarRaceEnv(gym.Env):
         self.dead = False
         self.success = False
         self._hazard_contact = False
+        self._waypoint_reached = False
         self.health = float(options.get("health", self.config.initial_health))
         if not 0.0 < self.health <= self.config.initial_health:
             raise ValueError("health must be in (0, initial_health]")
@@ -620,6 +671,7 @@ class CarRaceEnv(gym.Env):
         self._hazard_contact = hazard_contact
         self._update_display_health(self.config.dt)
         checkpoint_crossed = False
+        self._waypoint_reached = False
         distance_after_motion = self.distance_to_waypoint
 
         if not self.dead:
@@ -627,6 +679,7 @@ class CarRaceEnv(gym.Env):
                 self.success = distance_after_motion <= self.config.goal_radius
             elif distance_after_motion <= self.config.goal_radius:
                 checkpoint_crossed = True
+                self._waypoint_reached = True
                 self._lap_completed += 1
                 if self._lap_completed >= self.config.checkpoint_count:
                     self.success = True
@@ -2234,22 +2287,42 @@ def register_environment() -> None:
         "CarRaceIceNavigation-v0": ("navigation", "car_race_ice", 8),
         # Np => N waypoints besides spawn; ring size / required passes = N+1.
         "CarRaceLap-v0": ("lap", "car_race_plain", 9),
+        "CarRaceLap1p-v0": ("lap", "car_race_plain", 2),
         "CarRaceLap2p-v0": ("lap", "car_race_plain", 3),
         "CarRaceLap4p-v0": ("lap", "car_race_plain", 5),
         "CarRaceLap8p-v0": ("lap", "car_race_plain", 9),
+        "CarRacePlainLap1p-v0": ("lap", "car_race_plain", 2),
         "CarRacePlainLap2p-v0": ("lap", "car_race_plain", 3),
         "CarRacePlainLap4p-v0": ("lap", "car_race_plain", 5),
         "CarRacePlainLap8p-v0": ("lap", "car_race_plain", 9),
+        "CarRaceGravLap1p-v0": ("lap", "car_race_grav", 2),
         "CarRaceGravLap2p-v0": ("lap", "car_race_grav", 3),
         "CarRaceGravLap4p-v0": ("lap", "car_race_grav", 5),
         "CarRaceGravLap8p-v0": ("lap", "car_race_grav", 9),
+        "CarRaceAntiGravLap1p-v0": ("lap", "car_race_anti_grav", 2),
         "CarRaceAntiGravLap2p-v0": ("lap", "car_race_anti_grav", 3),
         "CarRaceAntiGravLap4p-v0": ("lap", "car_race_anti_grav", 5),
         "CarRaceAntiGravLap8p-v0": ("lap", "car_race_anti_grav", 9),
+        "CarRaceIceLap1p-v0": ("lap", "car_race_ice", 2),
         "CarRaceIceLap2p-v0": ("lap", "car_race_ice", 3),
         "CarRaceIceLap4p-v0": ("lap", "car_race_ice", 5),
         "CarRaceIceLap8p-v0": ("lap", "car_race_ice", 9),
     }
+    prefixes: dict[str, CarRaceMode] = {
+        "CarRace": "car_race_plain",
+        "CarRacePlain": "car_race_plain",
+        "CarRaceGrav": "car_race_grav",
+        "CarRaceAntiGrav": "car_race_anti_grav",
+        "CarRaceIce": "car_race_ice",
+    }
+    for prefix, mode in prefixes.items():
+        for waypoint_count in range(1, 9):
+            registrations[f"{prefix}Lap{waypoint_count}p-v0"] = (
+                "lap",
+                mode,
+                waypoint_count + 1,
+            )
+
     for env_id, (task_mode, mode, checkpoint_count) in registrations.items():
         if env_id in registry:
             continue

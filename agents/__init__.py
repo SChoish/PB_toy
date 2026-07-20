@@ -1,4 +1,8 @@
-"""Hazard-env toy agents: BC, HIQL, TR-HIQL, PathBridger (PBG / PBF)."""
+"""Toy-suite agents: BC, HIQL, TR-HIQL, TRL, DQC, PathBridger (PBG / PBF).
+
+PathBridger core lives in ``agents.pathbridger``; ``agents.dynamics`` is the
+toy adapter (PBG/PBF).
+"""
 
 from agents.bc import BCAgent, default_config as bc_config
 from agents.dynamics import (

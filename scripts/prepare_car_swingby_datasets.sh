@@ -25,8 +25,11 @@ fi
 
 echo "=== car_race datasets (policy=${POLICY} size=${SIZE}) ==="
 for env in car_race_plain car_race_grav car_race_anti_grav car_race_ice; do
-  python -m car_race.generate_dataset \
-    --env "${env}" --policy "${POLICY}" --size "${SIZE}" "${extra[@]}"
+  for task in navigation lap; do
+    python -m car_race.generate_dataset \
+      --env "${env}" --policy "${POLICY}" --size "${SIZE}" \
+      --task "${task}" "${extra[@]}"
+  done
 done
 
 echo "=== swingby datasets (policy=${POLICY} size=${SIZE}) ==="
@@ -37,4 +40,4 @@ done
 
 echo "=== DONE ==="
 ls -lh car_race/datasets/*_${POLICY}_${SIZE}.npz 2>/dev/null || true
-ls -lh swingby/datasets/*_${POLICY}_${SIZE}.npz 2>/dev/null || true
+ls -lh swingby/datasets/*_swingby_${POLICY}_${SIZE}.npz 2>/dev/null || true

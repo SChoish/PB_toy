@@ -1,19 +1,19 @@
 # Agent hyperparameters
 
 Defaults live under `agents/` (`bc`, `hiql`, `dynamics`).
-Training: `python -m hazard_env.train --agent {bc,hiql,tr_hiql,trl,dqc,pbg,pbf}`.
+Training: `python -m car_race.train` / `python -m swingby.train` `--agent {bc,hiql,tr_hiql,trl,dqc,pbg,pbf}`.
 
 Layout (mirrors Pathbridger_flow):
 
 ```
-agents/              # environment-neutral agent implementations and model utilities
-hazard_env/
-  train.py           # Hazard2D-specific training and evaluation
-  utils/             # Hazard2D-specific datasets and rendering
+agents/              # shared agents + HYPERPARAMETERS + diagnostic rendering
+car_race/            # annular navigation + lap racing
+swingby/             # orbital flyby / swing-by
 ```
 
-These are **toy reimplementations** inspired by OGBench (GCBC / HIQL) and
-Pathbridger_flow (PBG / PBF), not full imports of those codebases.
+These are **toy environments + training loops**. PBG/PBF agent cores are
+**from PathBridger** (`agents/pathbridger/`); other agents remain
+lightweight reimplementations inspired by OGBench / Pathbridger_flow.
 
 ---
 
@@ -25,14 +25,15 @@ Pathbridger_flow (PBG / PBF), not full imports of those codebases.
 | Learning rate `lr` | `3e-4` | |
 | Batch size | `256` | |
 | MLP width | `(256, 256)` | GELU; see per-agent LN |
-| Observation | `[x, y, vx, vy]` | `observation_mode="state"` |
+| Observation | env-specific | car_race / swingby state vectors |
 | Action (env) | `(angle ∈ [-π,π], thrust ∈ [0,1])` | |
 | Action (network) | `[angle/π, 2·thrust−1] ∈ [-1,1]^2` | clip after sample |
 | Dataset | `datasets/{env}_{policy}_{size}.npz` | policy∈{navigate,noisy,random}, size∈{1k,10k,100k} |
 | Goal relabel | `goal_relabel_prob=0.8` | else commanded / terminal |
-| Subgoal horizon `K` | `8` | `subgoal_steps` / `dynamics_N` |
+| Subgoal horizon `K` | `25` | `subgoal_steps` / `dynamics_N` |
+| Action chunk `h_a` | `5` | PBG/PBF `action_chunk_horizon` (env steps per replan) |
 | Path tensor | `(B, K+1, 4)` | true `s_t … s_{t+K}` for PBG/PBF |
-| Goals | full 4D state | commanded/eval: `[gx, gy, 0, 0]` |
+| Goals | env-specific | car_race / swingby task goal prefix (φ) |
 | Eval | tasks 1–5 × 5 eps (=25); BC/HIQL `T=0`, PB `T=1` | `max_episode_steps=300` |
 | Seed (recent runs) | `0` | |
 | GPU cap | `XLA_PYTHON_CLIENT_MEM_FRACTION=0.25` | `PREALLOCATE=false` |
@@ -77,7 +78,7 @@ low actor `π_lo(a|s,φ)`, high actor `π_hi(z|s,g)` predicting **representation
 | `expectile` | `0.7` | IVL expectile |
 | `low_alpha` / `high_alpha` | `3.0` | AWR temperatures |
 | `rep_dim` | `10` | φ / high-actor output dim |
-| `subgoal_steps` | `8` | low/high K |
+| `subgoal_steps` | `25` | low/high K |
 | `goal_dim` | `4` | full-state goals only |
 | `gc_negative` | `True` | rewards `-1/0` with index equality |
 | Value mixture | `0.2/0.5/0.3` | cur / traj / random |
@@ -104,7 +105,7 @@ HIQL의 low/high actor + AWR는 그대로 두고, critic만 PathBridger TRL-lite
 | `discount` | `0.99` | geometric base `γ^j` + tri product |
 | `tau` | `0.005` | target V Polyak |
 | `low_alpha` / `high_alpha` | `3.0` | AWR on sigmoid-V advantage |
-| `subgoal_steps` | `8` | path triples for transitive V |
+| `subgoal_steps` | `25` | path triples for transitive V |
 | Expectile / ensemble | none | replaced by TRL-lite |
 
 **Actor advantages (sigmoid V):**
@@ -139,7 +140,7 @@ critic + implicit V + flow BC.
 | Hyperparameter | Value |
 |---|---|
 | `hidden_dims` / `batch_size` | `(256,256)` / `256` |
-| critic chunk / policy chunk | `8` / `1` |
+| critic chunk / policy chunk | `25` / `5` |
 | `discount` / `tau` | `0.99` / `0.005` |
 | `kappa_d` / `kappa_b` | `0.5` / `0.9` |
 | `flow_steps` / best-of-N | `8` / `8` |
@@ -149,32 +150,28 @@ Both agents use terminal-safe compact trajectory samplers and emit one normalize
 
 ---
 
-## PBG (PathBridger-Gaussian lite)
+## PBG (PathBridger-Gaussian)
 
-**Files:** `agents/dynamics.py` (`subgoal_distribution=diag_gaussian`), bridge in `agents/dynamics_utils.py`, value in `agents/critic.py`
-**Stack:** subgoal mean + **transitive sigmoid V** + closed-form bridge + path residual + IDM
+**Source:** from `../PathBridger`, packaged as `agents/pathbridger/` (DynamicsAgent + CriticAgent).
+Toy wrapper: `agents/dynamics.py` (`PathBridgerAgent`).
+
+**Stack:** subgoal mean + **transitive sigmoid V** (CriticAgent) + closed-form bridge + path residual + IDM
 
 | Hyperparameter | Value | Meaning |
 |----------------|-------|---------|
 | `lr` | `3e-4` | Adam |
-| `hidden_dims` | `(256, 256)` | subgoal / residual / IDM / value; LayerNorm=True |
+| `hidden_dims` | `(256, 256)` | toy suite width (override PathBridger default 512^3) |
 | `batch_size` | `256` | |
-| `dynamics_N` / `subgoal_steps` | `8` | bridge horizon `K` |
+| `dynamics_N` / `subgoal_steps` | `25` | bridge horizon `K` |
+| `action_chunk_horizon` | `5` | open-loop env steps per replan (`h_a`) |
+| `forward_bridge_path_loss_horizon` | `5` | path loss prefix |
 | `dynamics_lambda` | `1.0` | linear-SDE diffusion scale `λ` |
 | `bridge_gamma_inv` | `0.0` | hard endpoint bridge |
-| `theta_total` | `1.0` | cumulative OU rate `Θ_K` |
-| `progress_alpha` | `0.8` | prefix-progress `c_i=(i/K)^α` |
-| `discount` | `0.99` | geometric base target `γ^j` for V |
-| `tau` | `0.005` | target V Polyak |
-| `subgoal_loss_weight` | `1.0` | displacement target `Δ=s_{t+K}−s_t` |
-| `path_loss_weight` | `1.0` | interior + first-step path MSE |
-| `idm_loss_weight` | `1.0` | `‖IDM(s,s') − a‖²` |
-| `value_loss_weight` | `1.0` | self + base + product-transitive |
-| `subgoal_value_gap_scale` | `3.0` | subgoal weight `exp(alpha·[V(z,g)−V(s,g)])`; HIQL alpha와 통일 |
-| `subgoal_value_weight_max` | `100.0` | maximum detached gap weight; HIQL cap과 통일 |
-| Subgoal loss | Gaussian **NLL** | `q(z\|s,g)=N(μ,diag(σ²))`; gap-weighted |
-| `subgoal_eval_num_samples` | `4` | T=1 eval stochastic proposals |
+| `discount` | `0.99` | geometric base target for V |
+| `subgoal_eval_num_samples` | `1` | T=1: single stochastic Gaussian sample |
 | `subgoal_include_mean` | `False` | match mainline eval; no pinned mean |
+| actor φ | `(0,1,2,3)` | car_race `[x,y,progress,dir]`; swingby `[gx,gy,gvx,gvy]` |
+| critic / value | `full` | full-state transitive V |
 
 **Value / subgoal selection (transitive):**
 - Train: full-state same-trajectory tuples with `i<k<j`,
@@ -182,41 +179,29 @@ Both agents use terminal-safe compact trajectory samplers and emit one normalize
   `V(s_i,s_j) ← V̄(s_i,s_k)V̄(s_k,s_j)`.
 - Subgoal regression/flow matching: multiply each sample by detached
   `min(exp(3·[V̄(s_{t+K},g)−V̄(s,g)]), 100)`.
-- Act (PBG): T=0 is the Gaussian mean diagnostic; T=1 selects the
-  transitive-ratio best of four stochastic endpoints.
+- Act (PBG): T=0 is the Gaussian mean diagnostic; T=1 uses **one**
+  stochastic sample (no BoN).
 
 **Bridge (fixed schedule):**
 - `μ_i = a_i s + b_i z`, `path_i = μ_i + w_i r_θ`, `w_i=i(K−i)/K²`.
 
 ---
 
-## PBF (PathBridger-Flow lite)
+## PBF (PathBridger-Flow)
 
-**Files:** same `agents/dynamics.py` with `subgoal_distribution=flow`.
-Same transitive V + bridge + IDM as PBG; endpoint proposals from **conditional flow**.
+Same PathBridger stack (`agents/pathbridger`) as PBG with `subgoal_distribution=flow`.
 
 | Hyperparameter | Value | Meaning |
 |----------------|-------|---------|
-| `lr` | `3e-4` | Adam |
-| `hidden_dims` | `(256, 256)` | flow / residual / IDM / value; LayerNorm=True |
-| `batch_size` | `256` | |
-| `dynamics_N` / `subgoal_steps` | `8` | bridge `K` |
-| `flow_steps` | `8` | Euler steps per proposal |
-| `dynamics_lambda` | `1.0` | |
-| `bridge_gamma_inv` | `0.0` | |
-| `theta_total` | `1.0` | |
-| `progress_alpha` | `0.8` | |
-| `discount` / `tau` | `0.99` / `0.005` | same TRL-lite V |
-| gap scale / max weight | `3.0` / `100.0` | same detached value-gap weighting |
-| Flow loss | CFM MSE | `x_u=(1-u)ε+u z`, `‖v_θ−(z−ε)‖²` |
-| `subgoal_eval_num_samples` | `4` | four stochastic flow endpoints at T=1 |
+| `dynamics_N` / `subgoal_steps` | `25` | bridge `K` |
+| `action_chunk_horizon` | `5` | open-loop env steps per replan (`h_a`) |
+| `subgoal_flow_steps` | `8` | Euler steps per proposal |
+| `subgoal_eval_num_samples` | `8` | eight stochastic flow endpoints at T=1 |
 | `subgoal_include_mean` | `False` | no zero-noise endpoint in T=1 BoN |
-| `path_loss_weight` | `1.0` | |
-| `idm_loss_weight` | `1.0` | |
-| `value_loss_weight` | `1.0` | |
+| actor φ / critic | `(0,1,2,3)` / `full` | same recipe as PBG |
 
-**Inference:** four stochastic flow endpoints → transitive-ratio best selection
-→ bridge → `IDM(s, path_1)`. T=0 remains a zero-noise diagnostic.
+**Inference:** eight stochastic flow endpoints → transitive-ratio best selection
+→ bridge → IDM action chunk (`h_a`). T=0 remains a zero-noise diagnostic.
 
 ---
 
@@ -227,15 +212,5 @@ export PYTHONPATH=/path/to/toy_examples
 export XLA_PYTHON_CLIENT_PREALLOCATE=false
 export XLA_PYTHON_CLIENT_MEM_FRACTION=0.25
 
-python -m hazard_env.train \
-  --agent {bc,hiql,tr_hiql,pbg,pbf} \
-  --steps 10000 --eval-every 5000 --log-every 1000 --seed 0 \
-  --env hazard_plain \
-  --checkpoint-dir hazard_env/checkpoints/hazard_plain/full_10k/{agent} \
-  --render-dir hazard_env/renders/hazard_plain/full_10k/{agent}
-```
-
-Use `--env hazard_grav` or `--env hazard_anti_grav` for the signed-field
-variants. Artifacts are grouped under
-`checkpoints/{hazard_plain,hazard_grav,hazard_anti_grav}/` and
-`renders/{hazard_plain,hazard_grav,hazard_anti_grav}/`.
+python -m car_race.train --env car_race_plain --agent pbg --task navigation
+python -m swingby.train --env swingby_planet --agent hiql

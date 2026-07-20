@@ -168,6 +168,6 @@ def default_config():
         "low_alpha": 3.0,
         "high_alpha": 3.0,
         "batch_size": 256,
-        "subgoal_steps": 8,
+        "subgoal_steps": 25,
         "goal_dim": 4,
     }

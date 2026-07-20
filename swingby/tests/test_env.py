@@ -4,6 +4,7 @@ import numpy as np
 from gymnasium.utils.env_checker import check_env
 
 from swingby import OrbitalSwingByEnv, black_hole_config, planet_config
+from swingby.env import swingby_eval_rotation
 from swingby.generate_dataset import collect_split
 from swingby.policies import PolicyState, expert_action
 
@@ -24,6 +25,31 @@ class SwingByApiTest(unittest.TestCase):
                 self.assertEqual(info["task_id"], task_id)
             env.close()
 
+    def test_rotated_task_reset_rotates_state_velocity_and_goal(self):
+        env = OrbitalSwingByEnv(config=planet_config(), observation_mode="state_goal")
+        base, _ = env.reset(options={"task_id": 3})
+        angle = 0.17
+        rotated, info = env.reset(
+            options={"task_id": 3, "task_rotation": angle}
+        )
+        c, s = np.cos(angle), np.sin(angle)
+        matrix = np.array([[c, -s], [s, c]])
+        np.testing.assert_allclose(rotated[:2], matrix @ base[:2], atol=1e-5)
+        np.testing.assert_allclose(rotated[2:4], matrix @ base[2:4], atol=1e-5)
+        self.assertEqual(float(rotated[4]), float(base[4]))
+        np.testing.assert_allclose(rotated[5:7], matrix @ base[5:7], atol=1e-5)
+        np.testing.assert_allclose(rotated[7:9], matrix @ base[7:9], atol=1e-5)
+        self.assertAlmostEqual(info["task_rotation"], angle)
+        env.close()
+
+    def test_swingby_eval_has_one_canonical_and_24_unique_heldout_variants(self):
+        for task_id in range(1, 6):
+            angles = np.array(
+                [swingby_eval_rotation(task_id, i, 25) for i in range(25)]
+            )
+            self.assertEqual(int(np.isclose(angles, 0.0).sum()), 1)
+            self.assertEqual(len(np.unique(angles)), 25)
+
     def test_expert_action_is_normalized(self):
         env = OrbitalSwingByEnv(config=planet_config(), observation_mode="state")
         env.reset(seed=0)
@@ -32,16 +58,52 @@ class SwingByApiTest(unittest.TestCase):
         self.assertTrue(np.all(action <= env.action_space.high))
         env.close()
 
-    def test_expert_preburns_only_for_a_ballistic_miss(self):
-        env = OrbitalSwingByEnv(config=planet_config(), observation_mode="state")
-        env.reset(options={"task_id": 1})
-        coast = expert_action(env, PolicyState())
-        self.assertEqual(float(coast[1]), 0.0)
+    def test_fixed_eval_removes_trivial_t1_but_dataset_profile_is_frozen(self):
+        eval_env = OrbitalSwingByEnv(
+            config=planet_config(), observation_mode="state"
+        )
+        _, eval_info = eval_env.reset(options={"task_id": 1})
+        correction = expert_action(eval_env, PolicyState())
+        self.assertEqual(eval_info["task_profile"], "eval_fixed")
+        self.assertEqual(eval_info["task_name"], "task1_offset_intercept")
+        self.assertEqual(float(correction[1]), 1.0)
+        eval_env.close()
 
-        env.reset(options={"task_id": 2})
-        preburn = expert_action(env, PolicyState())
-        self.assertEqual(float(preburn[1]), 1.0)
-        env.close()
+        data_env = OrbitalSwingByEnv(
+            config=planet_config(),
+            observation_mode="state",
+            task_profile="dataset",
+        )
+        _, data_info = data_env.reset(options={"task_id": 1})
+        coast = expert_action(data_env, PolicyState())
+        self.assertEqual(data_info["task_name"], "task1_coast_alignment")
+        self.assertEqual(float(coast[1]), 0.0)
+        data_env.close()
+
+    def test_fixed_eval_mix_uses_dataset_t2_and_interpolated_t5(self):
+        eval_env = OrbitalSwingByEnv(
+            config=planet_config(), observation_mode="state"
+        )
+        data_env = OrbitalSwingByEnv(
+            config=planet_config(),
+            observation_mode="state",
+            task_profile="dataset",
+        )
+        for key in ("init_xy", "init_velocity", "goal_xy", "goal_velocity"):
+            np.testing.assert_allclose(
+                eval_env.task_infos[1][key], data_env.task_infos[1][key]
+            )
+        self.assertEqual(
+            eval_env.task_infos[4]["task_name"], "task5_mixed_far_capture"
+        )
+        self.assertFalse(
+            np.allclose(
+                eval_env.task_infos[4]["goal_xy"],
+                data_env.task_infos[4]["goal_xy"],
+            )
+        )
+        eval_env.close()
+        data_env.close()
 
     def test_expert_completes_all_fixed_tasks_for_both_bodies(self):
         for config in (planet_config(), black_hole_config()):

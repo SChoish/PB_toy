@@ -3,7 +3,8 @@
 The named sizes are minimum transition counts.  Collection always keeps whole
 episodes, so saved arrays may be slightly larger than the requested budget.
 Train and validation splits are collected independently with disjoint seeds.
-The same NPZ is consumed by navigation, lap_2p, lap_4p, and lap_8p loaders.
+Navigation and universal lap files share the same physical schema.  One
+``--task lap`` NPZ is re-annotated for every task from lap_1p through lap_8p.
 """
 
 from __future__ import annotations
@@ -31,6 +32,7 @@ EnvName = Literal[
     "car_race_ice",
 ]
 PolicyName = Literal["expert", "noisy", "random"]
+DatasetTask = Literal["navigation", "lap"]
 SizeName = Literal["1k", "10k", "100k"]
 
 ENVS: tuple[EnvName, ...] = tuple(GRAVITY_STRENGTHS)
@@ -44,9 +46,20 @@ SIZE_STEPS: dict[SizeName, tuple[int, int]] = {
 
 
 def physical_observation(env: CarRaceEnv) -> np.ndarray:
-    """Task-agnostic physical state shared by navigate and all lap tasks."""
-    state = env.state
-    return np.concatenate([state[:2], state[4:]]).astype(np.float32)
+    """Task-agnostic physical state stored by both dataset families."""
+    return np.array(
+        [
+            env.position[0],
+            env.position[1],
+            np.cos(env.heading),
+            np.sin(env.heading),
+            env.speed,
+            env.health,
+            env.external_velocity[0],
+            env.external_velocity[1],
+        ],
+        dtype=np.float32,
+    )
 
 
 @dataclass
@@ -99,6 +112,58 @@ def navigation_waypoint(env: CarRaceEnv, *, aggressive: bool = False) -> np.ndar
     ).astype(np.float32)
 
 
+def lap_navigation_waypoint(env: CarRaceEnv) -> np.ndarray:
+    """Return a short ring lookahead that passes through every real waypoint."""
+    current_angle = float(np.arctan2(env.position[1], env.position[0]))
+    direction = float(env._lap_direction)
+    radius = float(np.linalg.norm(env.position))
+    # The signed field bias counters steady radial displacement. Ice has no
+    # field and is stabilized by the radial feedback term alone.
+    target_radius = float(
+        np.clip(
+            env.config.track_radius
+            + env.config.gravity_strength
+            + 1.2 * (env.config.track_radius - radius),
+            env.config.inner_hazard_radius
+            + env.config.collision_radius
+            + 0.065,
+            env.config.outer_hazard_radius
+            - env.config.collision_radius
+            - 0.065,
+        )
+    )
+    target_angle = current_angle + direction * 0.28
+    return (
+        target_radius
+        * np.array([np.cos(target_angle), np.sin(target_angle)])
+    ).astype(np.float32)
+
+
+def lap_expert_action(env: CarRaceEnv) -> np.ndarray:
+    """Direction-conditioned circle tracker shared by every lap density."""
+    target = lap_navigation_waypoint(env)
+    delta = target - env.position
+    distance = float(np.linalg.norm(delta))
+    desired_heading = float(np.arctan2(delta[1], delta[0]))
+    heading_error = _wrap_angle(desired_heading - env.heading)
+    steering = float(
+        np.clip(1.8 * heading_error / env.config.max_steer_angle, -1.0, 1.0)
+    )
+    target_direction = delta / max(distance, 1e-8)
+    target_speed = 0.40 if env.config.cornering_grip < 0.5 else 0.50
+    target_drive_speed = float(
+        np.clip(
+            target_speed - np.dot(env.external_velocity, target_direction),
+            0.0,
+            env.config.max_speed,
+        )
+    )
+    throttle = float(
+        np.clip(1.5 * (target_drive_speed - env.speed), -1.0, 1.0)
+    )
+    return np.array([steering, throttle], dtype=np.float32)
+
+
 def expert_action(
     env: CarRaceEnv,
     *,
@@ -106,9 +171,8 @@ def expert_action(
 ) -> np.ndarray:
     """Pure-pursuit-like steering and speed control."""
     if env.config.task_mode == "lap":
-        target = env.current_waypoint
-    else:
-        target = navigation_waypoint(env, aggressive=aggressive)
+        return lap_expert_action(env)
+    target = navigation_waypoint(env, aggressive=aggressive)
     delta = target - env.position
     desired_heading = float(
         np.arctan2(delta[1], delta[0])
@@ -210,6 +274,9 @@ def _append_transition(
     terminal: bool,
     info: dict,
     episode_id: int,
+    is_lap: bool,
+    lap_direction: int,
+    lap_start_angle: float,
 ) -> None:
     store["observations"].append(np.asarray(observation, dtype=np.float32))
     store["actions"].append(np.asarray(action, dtype=np.float32))
@@ -221,11 +288,14 @@ def _append_transition(
     store["step_impulses"].append(float(info["step_impulse"]))
     store["hazard_contacts"].append(bool(info["hazard_contact"]))
     store["episode_ids"].append(int(episode_id))
+    store["is_lap"].append(bool(is_lap))
+    store["lap_directions"].append(int(lap_direction))
+    store["lap_start_angles"].append(float(lap_start_angle))
 
 
 def _as_arrays(store: dict[str, list]) -> dict[str, np.ndarray]:
-    bool_keys = {"terminals", "hazard_contacts"}
-    int_keys = {"episode_ids"}
+    bool_keys = {"terminals", "hazard_contacts", "is_lap"}
+    int_keys = {"episode_ids", "lap_directions"}
     arrays: dict[str, np.ndarray] = {}
     for key, values in store.items():
         if key in bool_keys:
@@ -246,29 +316,40 @@ def collect_split(
     max_episode_steps: int,
     noise: float,
     env_name: EnvName = "car_race_plain",
+    task: DatasetTask = "navigation",
 ) -> tuple[dict[str, np.ndarray], dict[str, float]]:
-    """Collect task-agnostic physical trajectories for every downstream task."""
+    """Collect navigation data or universal ring-following lap data."""
+    if task not in ("navigation", "lap"):
+        raise ValueError(f"Unknown dataset task: {task}")
     config = CarRaceConfig(
-        task_mode="navigation",
+        task_mode=task,
+        checkpoint_count=9,
         max_episode_steps=max_episode_steps,
         **mode_config_kwargs(env_name),
     )
     env = CarRaceEnv(
         config=config,
         observation_mode="state",
-        terminate_on_success=False,
+        terminate_on_success=(task == "lap"),
     )
     rng = np.random.default_rng(seed)
     store = _empty_store()
     episode_id = 0
     deaths = 0
     goals_reached = 0
+    laps_completed = 0
     random_actions = 0
     aggressive_episodes = 0
 
     while len(store["actions"]) < minimum_steps:
         env.reset(seed=seed + episode_id + 1)
         observation = physical_observation(env)
+        lap_direction = int(env._lap_direction) if task == "lap" else 0
+        lap_start_angle = (
+            float(np.arctan2(env.position[1], env.position[0]))
+            if task == "lap"
+            else 0.0
+        )
         policy_state = PolicyState()
         aggressive = policy != "random" and rng.random() < 0.15
         aggressive_episodes += int(aggressive)
@@ -296,9 +377,12 @@ def collect_split(
                 terminal=done,
                 info=info,
                 episode_id=episode_id,
+                is_lap=(task == "lap"),
+                lap_direction=lap_direction,
+                lap_start_angle=lap_start_angle,
             )
             observation = next_observation
-            if info.get("is_success", False) and not done:
+            if task == "navigation" and info.get("is_success", False) and not done:
                 goals_reached += 1
                 env.set_goal(
                     env.sample_safe_point(
@@ -308,6 +392,7 @@ def collect_split(
                 )
 
         deaths += int(info.get("dead", False))
+        laps_completed += int(task == "lap" and info.get("is_success", False))
         episode_id += 1
 
     env.close()
@@ -317,6 +402,7 @@ def collect_split(
         "steps": float(count),
         "episodes": float(episode_id),
         "goals_per_episode": float(goals_reached / max(episode_id, 1)),
+        "lap_success_rate": float(laps_completed / max(episode_id, 1)),
         "death_rate": float(deaths / max(episode_id, 1)),
         "hazard_contact_frac": float(arrays["hazard_contacts"].mean()),
         "random_action_frac": float(random_actions / max(count, 1)),
@@ -329,8 +415,10 @@ def dataset_stem(
     env_name: EnvName,
     policy: PolicyName,
     size: SizeName,
+    task: DatasetTask = "navigation",
 ) -> str:
-    return f"{env_name}_{policy}_{size}"
+    middle = "_lap" if task == "lap" else ""
+    return f"{env_name}{middle}_{policy}_{size}"
 
 
 def collect_dataset(
@@ -342,6 +430,7 @@ def collect_dataset(
     max_episode_steps: int = 500,
     noise: float = 0.08,
     save_path: pathlib.Path | None = None,
+    task: DatasetTask = "navigation",
 ) -> dict[str, dict[str, float]]:
     if (
         env_name not in ENVS
@@ -354,7 +443,7 @@ def collect_dataset(
         save_path = (
             pathlib.Path(__file__).resolve().parent
             / "datasets"
-            / f"{dataset_stem(env_name, policy, size)}.npz"
+            / f"{dataset_stem(env_name, policy, size, task)}.npz"
         )
     save_path = pathlib.Path(save_path)
     val_path = save_path.with_name(save_path.stem + "_val.npz")
@@ -366,6 +455,7 @@ def collect_dataset(
         max_episode_steps=max_episode_steps,
         noise=noise,
         env_name=env_name,
+        task=task,
     )
     val, val_stats = collect_split(
         policy=policy,
@@ -374,15 +464,20 @@ def collect_dataset(
         max_episode_steps=max_episode_steps,
         noise=noise,
         env_name=env_name,
+        task=task,
     )
     save_path.parent.mkdir(parents=True, exist_ok=True)
     np.savez_compressed(save_path, **train)
     np.savez_compressed(val_path, **val)
+    task_metric = (
+        f"lap_success={train_stats['lap_success_rate']:.3f}"
+        if task == "lap"
+        else f"goals/ep={train_stats['goals_per_episode']:.2f}"
+    )
     print(
         f"saved {save_path} steps={len(train['actions'])} "
         f"episodes={int(train_stats['episodes'])} "
-        f"goals/ep={train_stats['goals_per_episode']:.2f} "
-        f"death={train_stats['death_rate']:.3f}"
+        f"{task_metric} death={train_stats['death_rate']:.3f}"
     )
     print(f"saved {val_path} steps={len(val['actions'])}")
     return {"train": train_stats, "val": val_stats}
@@ -392,6 +487,7 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--env", choices=ENVS, default="car_race_plain")
     parser.add_argument("--policy", choices=POLICIES, default="expert")
+    parser.add_argument("--task", choices=("navigation", "lap"), default="navigation")
     parser.add_argument("--size", choices=SIZES, default="1k")
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--max-episode-steps", type=int, default=500)
@@ -419,7 +515,7 @@ def main() -> None:
         else [(args.env, args.policy, args.size)]
     )
     for env_name, policy, size in jobs:
-        stem = dataset_stem(env_name, policy, size)
+        stem = dataset_stem(env_name, policy, size, args.task)
         out = (
             pathlib.Path(__file__).resolve().parent
             / "datasets"
@@ -435,6 +531,7 @@ def main() -> None:
             seed=args.seed,
             max_episode_steps=args.max_episode_steps,
             noise=args.noise,
+            task=args.task,
             save_path=args.save_path
             if not args.generate_all
             else None,

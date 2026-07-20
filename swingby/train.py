@@ -18,12 +18,14 @@ from agents import AGENTS, DEFAULT_CONFIGS
 
 from .config import black_hole_config, planet_config
 from .datasets import (
+    LEGACY_ACTION_ENCODING,
     denormalize_actions,
     load_swingby_dataset,
     load_swingby_dqc_dataset,
     load_swingby_trl_dataset,
+    read_dataset_metadata,
 )
-from .env import OrbitalSwingByEnv
+from .env import OrbitalSwingByEnv, swingby_eval_rotation
 from .generate_dataset import ENVS, dataset_stem
 
 TASK_IDS = (1, 2, 3, 4, 5)
@@ -83,7 +85,9 @@ def _make_value_goal_resolver(
         key = task_goal.tobytes()
         if key not in cache:
             distance = np.sum(((features - task_goal) / scale) ** 2, axis=1)
-            cache[key] = states[int(np.argmin(distance))].copy()
+            resolved = states[int(np.argmin(distance))].copy()
+            resolved[:goal_dim] = task_goal
+            cache[key] = resolved
         return cache[key]
 
     return resolve
@@ -125,6 +129,11 @@ def _action_chunk_horizon(agent) -> int:
 
 def _uses_action_chunks(agent) -> bool:
     return hasattr(agent, "sample_action_chunk")
+
+
+def _action_encoding(agent) -> str:
+    config = dict(getattr(agent, "config", {}) or {})
+    return str(config.get("action_encoding", LEGACY_ACTION_ENCODING))
 
 
 def _select_action(
@@ -199,6 +208,8 @@ def _load_dataset(agent_name: str, dataset_path: pathlib.Path, config: dict):
     return load_swingby_dataset(
         dataset_path,
         path_horizon=int(config.get("subgoal_steps", 8)),
+        action_chunk_horizon=int(config.get("action_chunk_horizon", 5)),
+        value_base_horizon=int(config.get("value_base_horizon", 5)),
     )
 
 
@@ -258,8 +269,15 @@ def evaluate(
             ep_death: list[float] = []
             for task_id in task_ids:
                 reset_seed = episode_seed * 10007 + int(task_id)
+                rotation = swingby_eval_rotation(
+                    int(task_id), int(ep), int(episodes_per_task)
+                )
                 ob, info = env.reset(
-                    seed=reset_seed, options={"task_id": int(task_id)}
+                    seed=reset_seed,
+                    options={
+                        "task_id": int(task_id),
+                        "task_rotation": rotation,
+                    },
                 )
                 goal = _format_eval_goal(info)
                 value_goal = (
@@ -283,7 +301,9 @@ def evaluate(
                         chunk_index=chunk_index,
                     )
                     ob, _r, terminated, truncated, info = env.step(
-                        denormalize_actions(action)
+                        denormalize_actions(
+                            action, encoding=_action_encoding(agent)
+                        )
                     )
                     done = bool(terminated or truncated)
                 succ = float(info.get("is_success", False))
@@ -415,8 +435,24 @@ def load_checkpoint(
     pack_path = checkpoint_dir / f"step_{steps}.msgpack"
     metadata = json.loads(meta_path.read_text(encoding="utf-8"))
     config = metadata["config"]
+    dataset_meta = read_dataset_metadata(dataset_path)
+    if config.get("task_schema", "ballistic_v1") != dataset_meta["dataset_schema"]:
+        raise ValueError(
+            "SwingBy checkpoint/data schema mismatch. Retrain the canonical "
+            "swingby dataset in a matrix-provided _swingby checkpoint directory."
+        )
+    if config.get("action_encoding", LEGACY_ACTION_ENCODING) != dataset_meta[
+        "action_encoding"
+    ]:
+        raise ValueError("SwingBy checkpoint/data action encoding mismatch")
     if isinstance(config.get("hidden_dims"), list):
         config["hidden_dims"] = tuple(config["hidden_dims"])
+    if agent_name in ("pbg", "pbf"):
+        fresh = DEFAULT_CONFIGS[agent_name]()
+        config["subgoal_eval_num_samples"] = int(fresh["subgoal_eval_num_samples"])
+        config["phi_goal_obs_indices"] = (0, 1, 2, 3)
+        config["subgoal_value_goal_representation"] = "full"
+        config["env_name"] = str(config.get("env_name") or "swingby")
     data = _load_dataset(agent_name, dataset_path, config)
     if agent_name in ("trl", "dqc"):
         example = _to_jnp(data.sample(np.random.default_rng(0), 8))
@@ -468,6 +504,13 @@ def train(
     if config_overrides:
         config.update(config_overrides)
     config["goal_dim"] = 4
+    config["env_name"] = env_name
+    dataset_meta = read_dataset_metadata(dataset_path)
+    config["task_schema"] = dataset_meta["dataset_schema"]
+    config["action_encoding"] = dataset_meta["action_encoding"]
+    if agent_name in ("pbg", "pbf"):
+        config["phi_goal_obs_indices"] = (0, 1, 2, 3)
+        config["subgoal_value_goal_representation"] = "full"
 
     data = _load_dataset(agent_name, dataset_path, config)
     value_goal_resolver = (
@@ -607,7 +650,7 @@ def render_agent(
     """Render each fixed eval task into ``env/`` and ``overlay/`` videos."""
     import imageio.v2 as imageio
 
-    from hazard_env.utils.rendering import (
+    from agents.rendering import (
         collect_agent_diagnostics,
         compose_diagnostic_frame,
     )
@@ -629,7 +672,13 @@ def render_agent(
             overlay_path = overlay_dir / f"task{task_id}.mp4"
             reset_seed = int(rng.integers(0, 1_000_000))
             ob, info = env.reset(
-                seed=reset_seed, options={"task_id": int(task_id)}
+                seed=reset_seed,
+                options={
+                    "task_id": int(task_id),
+                    "task_rotation": swingby_eval_rotation(
+                        int(task_id), 1, 25
+                    ),
+                },
             )
             goal = _format_eval_goal(info)
             is_pathbridger = hasattr(agent, "_sample_candidates") and hasattr(
@@ -732,7 +781,9 @@ def render_agent(
                         )
                     )
                     ob, _reward, terminated, truncated, _info = env.step(
-                        denormalize_actions(action)
+                        denormalize_actions(
+                            action, encoding=_action_encoding(agent)
+                        )
                     )
                     trail.append(np.asarray(ob, dtype=np.float32).copy())
                     done = bool(terminated or truncated)

@@ -1,14 +1,13 @@
 # PathBridger toy examples
 
-Offline GCRL toy suite: shared agents and three continuous control environments
-(Hazard2D, CarRace, Orbital Swing-by), plus concept figures.
+Offline GCRL toy suite: shared agents and two continuous control environments
+(CarRace, Orbital Swing-by), plus concept figures.
 
 **Repo:** https://github.com/SChoish/PB_toy
 
 ```
 toy_examples/
 ├── agents/        # BC, HIQL, TR-HIQL, TRL, DQC, PBG, PBF
-├── hazard_env/    # ContinuousHazard2D
 ├── car_race/      # annular navigation + lap racing
 ├── swingby/       # orbital flyby / swing-by
 └── concept/       # PathBridger concept figures
@@ -36,29 +35,13 @@ Requires Python 3.10–3.12. Without an editable install, set
 | `bc` | behavior cloning |
 | `hiql` / `tr_hiql` | hierarchical / transitive HIQL |
 | `trl` / `dqc` | trajectory / action-chunk critics |
-| `pbg` / `pbf` | PathBridger (Gaussian / flow subgoal) |
+| `pbg` / `pbf` | PathBridger (Gaussian / flow) — core in `agents/pathbridger/` |
 
 PathBridger eval reports **T=0** (Gaussian mean / flow zero-noise diagnostic)
-and **T=1** (transitive-value best of four stochastic endpoints, with no pinned
-mean). Other families use their default temperature (BC/HIQL: 0, TRL/DQC: 1).
+and **T=1** (PBG: 1 stochastic sample; PBF: transitive-value best of 8 flow
+endpoints; no pinned mean). Other families use their default temperature (BC/HIQL: 0, TRL/DQC: 1).
 
-Defaults: [`hazard_env/HYPERPARAMETERS.md`](hazard_env/HYPERPARAMETERS.md).
-
-## Hazard2D
-
-| Env | Field |
-|-----|-------|
-| `hazard_plain` | off |
-| `hazard_grav` | attract |
-| `hazard_anti_grav` | repel |
-
-```bash
-python -m hazard_env.generate_navigate --generate-all
-python -m hazard_env.train --env hazard_plain --agent pbg --steps 50000 \
-  --dataset-policy navigate --dataset-size 100k
-```
-
-Eval tasks: `env.reset(options={"task_id": 1})` … `5`.
+Defaults: [`agents/HYPERPARAMETERS.md`](agents/HYPERPARAMETERS.md).
 
 ## CarRace
 
@@ -69,13 +52,14 @@ Eval tasks: `env.reset(options={"task_id": 1})` … `5`.
 | `car_race_anti_grav` | outward field |
 | `car_race_ice` | no field; low cornering, steering, acceleration, and braking grip |
 
-Tasks: `navigation` | `lap_2p` | `lap_4p` | `lap_8p`.
+Tasks: `navigation` | `lap_1p` … `lap_8p`.
 
 Ice retains lateral momentum while the chassis turns. Its low rolling drag also
 makes coasting and stopping distances longer than on the plain surface.
 
 ```bash
-python -m car_race.generate_dataset --generate-all
+python -m car_race.generate_dataset --generate-all --task navigation
+python -m car_race.generate_dataset --generate-all --task lap
 python -m car_race.train --env car_race_plain --agent pbg --task navigation \
   --dataset-size 100k --steps 50000
 ```
@@ -85,8 +69,29 @@ python -m car_race.train --env car_race_plain --agent pbg --task navigation \
 Body presets: `planet` | `black_hole`.
 
 ```bash
+# Default swingby dataset: one balanced dataset spanning T1 through T5.
 python -m swingby.generate_dataset --generate-all
+python -m swingby.train --env swingby_planet --agent hiql \
+  --dataset-size 100k --steps 50000
+
+# Legacy coast-aligned distribution remains available for ablations.
+python -m swingby.generate_dataset --generate-all --dataset-mode ballistic
 ```
+
+`swingby` balances transition coverage across the five fixed task families
+while separating train and evaluation initial conditions. Training uses the
+frozen `dataset` task table and inner rotation bands. The fixed evaluation
+mixes validated hard initial states/goals with the original T2 goal task and a
+77.5% hard T5 interpolation, running each canonical task once plus 24 variants
+from disjoint outer rotation bands. The expert dataset keeps only successful
+trajectories, terminates each trajectory on its commanded goal, and trains with
+a 50/50 mix of exact commanded goals and future HER goals whenever that
+commanded goal was actually reached. Network actions use continuous Cartesian thrust
+`throttle * [cos(angle), sin(angle)]`; this removes the angle wrap discontinuity
+and gives coasting the unique action `[0, 0]`. The raw NPZ still stores physical
+`(angle, throttle)` actions. Matrix jobs use `*_swingby_*` datasets and isolated
+`*_swingby_*` checkpoints by default. Older versioned files remain readable
+for reproducibility but are never selected by the default matrix scripts.
 
 The expert first predicts the unpowered trajectory. Reachable ballistic goals
 coast through periapsis; collision or goal-miss predictions trigger an inbound
@@ -111,8 +116,8 @@ python -m concept.codes             # both → concept/outputs/
 
 ## CLI entry points
 
-`car-race-generate`, `car-race-train`, `hazard-generate`, `hazard-train`,
-`swingby-generate`, `pb-concept`.
+`car-race-generate`, `car-race-train`, `swingby-generate`, `swingby-train`,
+`pb-concept`.
 
 ## Tests
 

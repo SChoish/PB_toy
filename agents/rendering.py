@@ -1,7 +1,7 @@
-"""Agent diagnostic overlays for rendered Hazard2D frames.
+"""Agent diagnostic overlays for rendered env frames.
 
-This module does not modify or subclass the environment.  It post-processes
-the RGB array returned by ``env.render()`` with model-side diagnostics.
+Post-processes the RGB array from ``env.render()`` with model-side diagnostics
+(value field, subgoals, planned paths). Used by car_race / swingby train.
 """
 
 from __future__ import annotations
@@ -119,7 +119,7 @@ def collect_agent_diagnostics(
     value_goal = np.asarray(value_goal, dtype=np.float32).reshape(-1)
     if compute_value_field:
         # Condition on current non-xy features when the state carries them
-        # (car_race health/heading/...). Hazard 4D keeps the zero-velocity slice.
+        # (car_race health/heading/...). Short 4-D states keep the zero-velocity slice.
         state_dim = int(observation.shape[-1])
         condition = observation if state_dim > 4 else None
         field = _value_field(

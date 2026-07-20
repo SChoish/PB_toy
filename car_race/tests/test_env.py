@@ -58,6 +58,21 @@ class CarRaceApiTest(unittest.TestCase):
                 check_env(env, skip_render_check=True)
                 env.close()
 
+    def test_all_lap_densities_are_registered(self):
+        register_environment()
+        for waypoint_count in range(1, 9):
+            for prefix in (
+                "CarRace",
+                "CarRacePlain",
+                "CarRaceGrav",
+                "CarRaceAntiGrav",
+                "CarRaceIce",
+            ):
+                env = gym.make(f"{prefix}Lap{waypoint_count}p-v0")
+                observation, _ = env.reset(seed=waypoint_count)
+                self.assertTrue(env.observation_space.contains(observation))
+                env.close()
+
     def test_seed_reproduces_navigation_task(self):
         env = CarRaceEnv(observation_mode="state_goal")
         obs_a, _ = env.reset(seed=17)
@@ -83,6 +98,7 @@ class CarRaceApiTest(unittest.TestCase):
         register_environment()
         for env_id in (
             "CarRaceNavigation-v0",
+            "CarRaceLap1p-v0",
             "CarRaceLap2p-v0",
             "CarRaceLap4p-v0",
             "CarRaceLap8p-v0",
@@ -468,8 +484,15 @@ class CarRaceTaskTest(unittest.TestCase):
                 np.zeros(2, dtype=np.float32)
             )
             self.assertEqual(info["checkpoints_completed"], completed)
+            self.assertEqual(float(env.state[11]), 1.0)
             if completed < 3:
                 self.assertFalse(terminated)
+                np.testing.assert_allclose(
+                    info["goal"][:2], env.current_waypoint, atol=1e-6
+                )
+                self.assertAlmostEqual(
+                    float(info["goal"][2]), (completed + 1) / 3
+                )
             else:
                 self.assertTrue(terminated)
         self.assertTrue(info["is_success"])

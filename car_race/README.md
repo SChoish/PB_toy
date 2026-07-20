@@ -35,15 +35,25 @@ env.close()
 ```
 
 Actions are normalized `[steering, throttle_or_brake]` in `[-1, 1]`.
-State layout:
+Navigation state layout:
 
 ```text
 [x, y, task_progress, direction, cos(heading), sin(heading),
  drive_speed, health, external_velocity_x, external_velocity_y]
 ```
 
+Lap states append the minimal route context:
+
+```text
+[waypoint_index, waypoint_reached, waypoint_x, waypoint_y]
+```
+
+The lap desired goal is the active waypoint
+`[waypoint_x, waypoint_y, target_progress, direction]` and advances after each
+ordered hit.
+
 Observation modes: `state`, `state_goal`, `goal_dict`.
-Tasks: `navigation` | `lap_2p` | `lap_4p` | `lap_8p`.
+Tasks: `navigation` | `lap_1p` … `lap_8p`.
 
 Ice uses reduced cornering grip (`0.20`), longitudinal acceleration/braking grip
 (`0.53`), and steering response (`0.55`). The chassis can point into a turn while
@@ -55,18 +65,23 @@ real drift without changing the state or dataset dimensions.
 Call `car_race.register_environment()` before `gymnasium.make(...)`.
 
 - `CarRaceNavigation-v0`, `CarRaceIceNavigation-v0`, …
-- `CarRaceLap2p-v0` / `Lap4p` / `Lap8p` and field-specific variants
+- `CarRaceLap1p-v0` through `CarRaceLap8p-v0` and field-specific variants
 
 ## Dataset + train
 
 ```bash
-python -m car_race.generate_dataset --env car_race_ice --policy expert --size 100k
+python -m car_race.generate_dataset --env car_race_ice --policy expert \
+  --size 100k --task navigation
+python -m car_race.generate_dataset --env car_race_ice --policy expert \
+  --size 100k --task lap
 python -m car_race.train --env car_race_ice --agent pbg --task navigation \
   --dataset-size 100k --steps 50000
 ```
 
 Policies: `expert` | `noisy` | `random`. Sizes: `1k` | `10k` | `100k`
-(minimum transitions; whole episodes are kept).
+(minimum transitions; whole episodes are kept).  Every `lap_1p` … `lap_8p`
+loader consumes the same `{env}_lap_{policy}_{size}.npz` file and changes only
+its ordered waypoint annotations.
 
 ## Tests
 

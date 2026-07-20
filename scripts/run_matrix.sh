@@ -5,6 +5,7 @@
 #   bash scripts/run_matrix.sh                    # actually train
 #
 # Env overrides: GPUS PACK STEPS SEED SIZE EVAL_EVERY LOG_EVERY
+#                AGENTS CAR_ENVS CAR_TASKS POLICIES SWING_ENVS SWING_DATASET_MODE
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -24,6 +25,7 @@ SIZE="${SIZE:-100k}"
 EVAL_EVERY="${EVAL_EVERY:-5000}"
 LOG_EVERY="${LOG_EVERY:-500}"
 DRY_RUN="${DRY_RUN:-0}"
+SWING_DATASET_MODE="${SWING_DATASET_MODE:-swingby}"
 
 # Prefer pip-bundled CUDA nvcc/ptxas over older system /usr/bin/ptxas.
 SITE="$(python -c 'import site; print(site.getsitepackages()[0])')"
@@ -34,8 +36,8 @@ IFS=',' read -r -a GPU_ARR <<< "${GPUS}"
 N_SLOTS=$(( ${#GPU_ARR[@]} * PACK ))
 mkdir -p nohup_logs/matrix checkpoints/car_race checkpoints/swingby
 
-mapfile -t JOBS < <(STEPS="${STEPS}" SEED="${SEED}" bash scripts/plan_matrix.sh | grep -v '^#')
-echo "jobs=${#JOBS[@]} slots=${N_SLOTS} (${#GPU_ARR[@]} GPUs × pack ${PACK}) steps=${STEPS} dry_run=${DRY_RUN}"
+mapfile -t JOBS < <(STEPS="${STEPS}" SEED="${SEED}" SWING_DATASET_MODE="${SWING_DATASET_MODE}" bash scripts/plan_matrix.sh | grep -v '^#')
+echo "jobs=${#JOBS[@]} slots=${N_SLOTS} (${#GPU_ARR[@]} GPUs × pack ${PACK}) steps=${STEPS} swing_mode=${SWING_DATASET_MODE} dry_run=${DRY_RUN}"
 
 # Active PIDs and their assigned GPU index into GPU_ARR.
 declare -a ACTIVE_PIDS=()
@@ -84,23 +86,51 @@ pick_gpu() {
   for i in "${!GPU_ARR[@]}"; do
     if [[ "${counts[$i]}" -lt "${PACK}" && "${counts[$i]}" -lt "${best_count}" ]]; then
       best=$i
-      best_count=${counts[$i]}
+      best_count="${counts[$i]}"
     fi
   done
   echo "${best}"
 }
 
 run_job() {
-  local gpu="$1" kind="$2" env="$3" task="$4" agent="$5" ckpt="$6"
-  local tag log render_dir
+  local gpu="$1" kind="$2" env="$3" task="$4" agent="$5" policy="$6" ckpt="$7"
+  local tag log render_dir dataset
 
   if [[ "${kind}" == "car_race" ]]; then
-    tag="${env}_${task}_${agent}_s${SEED}"
+    if [[ "${policy}" == "expert" ]]; then
+      tag="${env}_${task}_${agent}_s${SEED}"
+    else
+      tag="${env}_${task}_${agent}_${policy}_s${SEED}"
+    fi
+    if [[ "${task}" == "navigation" ]]; then
+      dataset="${ROOT}/car_race/datasets/${env}_${policy}_${SIZE}.npz"
+    else
+      dataset="${ROOT}/car_race/datasets/${env}_lap_${policy}_${SIZE}.npz"
+    fi
   else
-    tag="${env}_${agent}_s${SEED}"
+    if [[ "${SWING_DATASET_MODE}" == "swingby" ]]; then
+      if [[ "${policy}" == "expert" ]]; then
+        tag="${env}_swingby_${agent}_s${SEED}"
+      else
+        tag="${env}_swingby_${agent}_${policy}_s${SEED}"
+      fi
+      dataset="${ROOT}/swingby/datasets/${env}_swingby_${policy}_${SIZE}.npz"
+    else
+      if [[ "${policy}" == "expert" ]]; then
+        tag="${env}_${agent}_s${SEED}"
+      else
+        tag="${env}_${agent}_${policy}_s${SEED}"
+      fi
+      dataset="${ROOT}/swingby/datasets/${env}_${policy}_${SIZE}.npz"
+    fi
   fi
   log="nohup_logs/matrix/${tag}.log"
   render_dir="${ckpt}/renders"
+
+  if [[ -z "${dataset}" || ! -f "${dataset}" ]]; then
+    echo "SKIP_MISSING_DATA ${tag} (${dataset})"
+    return 0
+  fi
 
   # Already finished: skip if renders exist; otherwise render-only (instant resume).
   local render_only=0 eval_every="${EVAL_EVERY}" log_every="${LOG_EVERY}" n_eval=25
@@ -121,7 +151,7 @@ run_job() {
     return 0
   fi
 
-  echo "LAUNCH gpu=${gpu} ${tag} -> ${log}"
+  echo "LAUNCH gpu=${gpu} ${tag} policy=${policy} -> ${log}"
   if [[ "${DRY_RUN}" == "1" ]]; then
     return 0
   fi
@@ -134,7 +164,7 @@ run_job() {
       unset XLA_PYTHON_CLIENT_MEM_FRACTION
       exec python -m car_race.train \
         --env "${env}" --agent "${agent}" --task "${task}" \
-        --dataset-size "${SIZE}" --steps "${STEPS}" --seed "${SEED}" \
+        --dataset "${dataset}" --dataset-size "${SIZE}" --steps "${STEPS}" --seed "${SEED}" \
         --eval-every "${eval_every}" --log-every "${log_every}" \
         --num-eval-envs "${n_eval}" \
         --checkpoint-dir "${ckpt}" \
@@ -147,7 +177,7 @@ run_job() {
       unset XLA_PYTHON_CLIENT_MEM_FRACTION
       exec python -m swingby.train \
         --env "${env}" --agent "${agent}" \
-        --dataset-size "${SIZE}" --steps "${STEPS}" --seed "${SEED}" \
+        --dataset "${dataset}" --dataset-size "${SIZE}" --steps "${STEPS}" --seed "${SEED}" \
         --eval-every "${eval_every}" --log-every "${log_every}" \
         --num-eval-envs "${n_eval}" \
         --checkpoint-dir "${ckpt}" \
@@ -159,13 +189,13 @@ run_job() {
 }
 
 for line in "${JOBS[@]}"; do
-  IFS='|' read -r kind env task agent ckpt <<< "${line}"
+  IFS='|' read -r kind env task agent policy ckpt <<< "${line}"
 
   if [[ "${DRY_RUN}" == "1" ]]; then
     # Round-robin assign for schedule preview.
     idx=$(( ${#ACTIVE_PIDS[@]} % ${#GPU_ARR[@]} ))
     gpu="${GPU_ARR[$idx]}"
-    run_job "${gpu}" "${kind}" "${env}" "${task}" "${agent}" "${ckpt}"
+    run_job "${gpu}" "${kind}" "${env}" "${task}" "${agent}" "${policy}" "${ckpt}"
     ACTIVE_PIDS+=("dry")
     ACTIVE_GPU_IDX+=("${idx}")
     continue
@@ -181,7 +211,7 @@ for line in "${JOBS[@]}"; do
   done
   gpu="${GPU_ARR[$idx]}"
   before=${#ACTIVE_PIDS[@]}
-  run_job "${gpu}" "${kind}" "${env}" "${task}" "${agent}" "${ckpt}"
+  run_job "${gpu}" "${kind}" "${env}" "${task}" "${agent}" "${policy}" "${ckpt}"
   after=${#ACTIVE_PIDS[@]}
   if [[ "${after}" -gt "${before}" ]]; then
     ACTIVE_GPU_IDX+=("${idx}")

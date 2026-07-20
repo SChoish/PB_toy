@@ -1,4 +1,4 @@
-"""Small network building blocks for hazard_env agents."""
+"""Small network building blocks for toy-suite agents."""
 
 from __future__ import annotations
 

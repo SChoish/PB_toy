@@ -33,8 +33,9 @@ def transitive_value_loss(
     grad_params,
     *,
     discount: float,
+    distance_weight_power: float = 1.0,
     goal_dim: int | None = None,
-    eps: float = 1e-4,
+    eps: float = 1e-6,
 ):
     """Self + geometric base + product-transitive losses on sigmoid V."""
     obs = batch["observations"]
@@ -102,7 +103,7 @@ def transitive_value_loss(
         0.0,
     )
     distance_weight = jnp.clip(
-        1.0 / jnp.power(1.0 + distance, _VALUE_DISTANCE_WEIGHT_POWER),
+        1.0 / jnp.power(1.0 + distance, float(distance_weight_power)),
         _VALUE_DISTANCE_WEIGHT_CLIP_MIN,
         _VALUE_DISTANCE_WEIGHT_CLIP_MAX,
     )

@@ -21,6 +21,7 @@ STEPS="${STEPS:-50000}"
 SEED="${SEED:-0}"
 SIZE="${SIZE:-100k}"
 DRY_RUN="${DRY_RUN:-0}"
+SWING_DATASET_MODE="${SWING_DATASET_MODE:-swingby}"
 
 SITE="$(python -c 'import site; print(site.getsitepackages()[0])')"
 export PATH="${SITE}/nvidia/cuda_nvcc/bin:${PATH}"
@@ -29,7 +30,7 @@ export LD_LIBRARY_PATH="${SITE}/nvidia/cudnn/lib:${SITE}/nvidia/cublas/lib:${SIT
 IFS=',' read -r -a GPU_ARR <<< "${GPUS}"
 mkdir -p nohup_logs/render
 
-mapfile -t JOBS < <(STEPS="${STEPS}" SEED="${SEED}" bash scripts/plan_matrix.sh | grep -v '^#')
+mapfile -t JOBS < <(STEPS="${STEPS}" SEED="${SEED}" SWING_DATASET_MODE="${SWING_DATASET_MODE}" bash scripts/plan_matrix.sh | grep -v '^#')
 
 need_render() {
   local ckpt="$1"
@@ -77,15 +78,39 @@ pick_gpu() {
 
 queued=0
 for line in "${JOBS[@]}"; do
-  IFS='|' read -r kind env task agent ckpt <<< "${line}"
+  # plan_matrix: kind|env|task|agent|policy|checkpoint_dir
+  IFS='|' read -r kind env task agent policy ckpt <<< "${line}"
   if ! need_render "${ckpt}"; then
     continue
   fi
   queued=$((queued + 1))
   if [[ "${kind}" == "car_race" ]]; then
-    tag="${env}_${task}_${agent}_s${SEED}"
+    if [[ "${policy}" == "expert" ]]; then
+      tag="${env}_${task}_${agent}_s${SEED}"
+    else
+      tag="${env}_${task}_${agent}_${policy}_s${SEED}"
+    fi
+    if [[ "${task}" == "navigation" ]]; then
+      dataset="${ROOT}/car_race/datasets/${env}_${policy}_${SIZE}.npz"
+    else
+      dataset="${ROOT}/car_race/datasets/${env}_lap_${policy}_${SIZE}.npz"
+    fi
   else
-    tag="${env}_${agent}_s${SEED}"
+    if [[ "${SWING_DATASET_MODE}" == "swingby" ]]; then
+      if [[ "${policy}" == "expert" ]]; then
+        tag="${env}_swingby_${agent}_s${SEED}"
+      else
+        tag="${env}_swingby_${agent}_${policy}_s${SEED}"
+      fi
+      dataset="${ROOT}/swingby/datasets/${env}_swingby_${policy}_${SIZE}.npz"
+    else
+      if [[ "${policy}" == "expert" ]]; then
+        tag="${env}_${agent}_s${SEED}"
+      else
+        tag="${env}_${agent}_${policy}_s${SEED}"
+      fi
+      dataset="${ROOT}/swingby/datasets/${env}_${policy}_${SIZE}.npz"
+    fi
   fi
   render_dir="${ckpt}/renders"
   log="nohup_logs/render/${tag}.log"
@@ -99,10 +124,15 @@ for line in "${JOBS[@]}"; do
     sleep 5
   done
   gpu="${GPU_ARR[$idx]}"
-  echo "RENDER gpu=${gpu} ${tag} -> ${log}"
+  echo "RENDER gpu=${gpu} ${tag} policy=${policy} -> ${log}"
   if [[ "${DRY_RUN}" == "1" ]]; then
     ACTIVE_PIDS+=("dry")
     ACTIVE_GPU_IDX+=("${idx}")
+    continue
+  fi
+
+  if [[ ! -f "${dataset}" ]]; then
+    echo "SKIP_MISSING_DATA ${tag} (${dataset})"
     continue
   fi
 
@@ -114,7 +144,7 @@ for line in "${JOBS[@]}"; do
       # Resume at STEPS (instant) then render.
       exec python -m car_race.train \
         --env "${env}" --agent "${agent}" --task "${task}" \
-        --dataset-size "${SIZE}" --steps "${STEPS}" --seed "${SEED}" \
+        --dataset "${dataset}" --dataset-size "${SIZE}" --steps "${STEPS}" --seed "${SEED}" \
         --eval-every 0 --log-every 100000 --num-eval-envs 1 \
         --checkpoint-dir "${ckpt}" \
         --render-dir "${render_dir}"
@@ -126,7 +156,7 @@ for line in "${JOBS[@]}"; do
       unset XLA_PYTHON_CLIENT_MEM_FRACTION
       exec python -m swingby.train \
         --env "${env}" --agent "${agent}" \
-        --dataset-size "${SIZE}" --steps "${STEPS}" --seed "${SEED}" \
+        --dataset "${dataset}" --dataset-size "${SIZE}" --steps "${STEPS}" --seed "${SEED}" \
         --eval-every 0 --log-every 100000 --num-eval-envs 1 \
         --checkpoint-dir "${ckpt}" \
         --render-dir "${render_dir}"

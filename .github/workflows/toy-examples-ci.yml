@@ -33,8 +33,8 @@ jobs:
       - name: Import agents and training entry points
         run: |
           python -c "import agents"
-          python -c "import hazard_env.train"
           python -c "import car_race.train"
+          python -c "import swingby.train"
 
   build:
     runs-on: ubuntu-latest

@@ -8,8 +8,18 @@ from typing import Literal
 
 import numpy as np
 
-TaskView = Literal["navigation", "lap_2p", "lap_4p", "lap_8p"]
-LAP_RING_COUNTS = {"lap_2p": 3, "lap_4p": 5, "lap_8p": 9}
+TaskView = Literal[
+    "navigation",
+    "lap_1p",
+    "lap_2p",
+    "lap_3p",
+    "lap_4p",
+    "lap_5p",
+    "lap_6p",
+    "lap_7p",
+    "lap_8p",
+]
+LAP_RING_COUNTS = {f"lap_{n}p": n + 1 for n in range(1, 9)}
 
 
 def goal_success(
@@ -41,10 +51,14 @@ class CarRaceDataset:
     episode_ids: np.ndarray
     episode_ends: np.ndarray
     valid_indices: np.ndarray
+    task: TaskView = "navigation"
     path_horizon: int = 8
-    goal_relabel_prob: float = 0.8
-    random_goal_prob: float = 0.1
+    action_chunk_horizon: int = 5
+    goal_relabel_prob: float = 1.0
+    checkpoint_goal_prob: float = 0.0
+    random_goal_prob: float = 0.0
     goal_radius: float = 0.07
+    value_base_horizon: int = 5
 
     def __len__(self) -> int:
         return int(self.observations.shape[0])
@@ -74,6 +88,41 @@ class CarRaceDataset:
         if len(candidates) == 0:
             return self._future_index(rng, index)
         return int(candidates[rng.integers(0, len(candidates))])
+
+    def _future_checkpoint_index(
+        self, rng: np.random.Generator, index: int
+    ) -> int:
+        """Sample a later transition that actually reaches a checkpoint."""
+        end = int(self.episode_ends[index])
+        current_progress = float(self.observations[index, 2])
+        candidates = np.arange(index, end + 1, dtype=np.int64)
+        crossed = (
+            self.next_observations[candidates, 2]
+            > self.observations[candidates, 2] + 1e-6
+        ) & (
+            self.next_observations[candidates, 2]
+            > current_progress + 1e-6
+        )
+        candidates = candidates[crossed]
+        if len(candidates) == 0:
+            return self._future_index(rng, index)
+        return int(candidates[rng.integers(0, len(candidates))])
+
+    def _commanded_goal_state(
+        self, index: int
+    ) -> tuple[np.ndarray, bool]:
+        """Resolve the active waypoint and report whether it was reached."""
+        end = int(self.episode_ends[index])
+        goal = self.commanded_goals[index]
+        candidates = np.arange(index, end + 1, dtype=np.int64)
+        reached = goal_success(
+            self.next_observations[candidates, :4],
+            np.broadcast_to(goal, (len(candidates), 4)),
+            goal_radius=self.goal_radius,
+        )
+        hits = candidates[reached]
+        target = int(hits[0]) if len(hits) else end
+        return self.next_observations[target], bool(len(hits))
 
     def _path(self, index: int) -> np.ndarray:
         k = self.path_horizon
@@ -124,19 +173,41 @@ class CarRaceDataset:
 
         for row, index in enumerate(idxs):
             paths[row] = self._path(int(index))
+            path_target_offset = self.path_horizon
             draw = float(rng.random())
             if draw < self.random_goal_prob:
                 goal_index = self._reachable_random_index(rng, int(index))
                 goals[row] = self.next_observations[goal_index, :4]
                 subgoal_value_goals[row] = self.next_observations[goal_index]
-            elif draw < self.random_goal_prob + self.goal_relabel_prob:
+            elif draw < self.random_goal_prob + self.checkpoint_goal_prob:
+                goal_index = self._future_checkpoint_index(rng, int(index))
+                goals[row] = self.next_observations[goal_index, :4]
+                subgoal_value_goals[row] = self.next_observations[goal_index]
+                path_target_offset = min(
+                    self.path_horizon, int(goal_index - index + 1)
+                )
+            elif draw < (
+                self.random_goal_prob
+                + self.checkpoint_goal_prob
+                + self.goal_relabel_prob
+            ):
                 goal_index = self._future_index(rng, int(index))
                 goals[row] = self.next_observations[goal_index, :4]
                 subgoal_value_goals[row] = self.next_observations[goal_index]
+                path_target_offset = min(
+                    self.path_horizon, int(goal_index - index + 1)
+                )
             else:
-                goals[row] = self.commanded_goals[index]
-                terminal_index = int(self.episode_ends[index])
-                subgoal_value_goals[row] = self.next_observations[terminal_index]
+                resolved_state, reachable = self._commanded_goal_state(int(index))
+                subgoal_value_goals[row] = resolved_state
+                goals[row] = (
+                    self.commanded_goals[index]
+                    if reachable
+                    else resolved_state[:4]
+                )
+
+            if path_target_offset < self.path_horizon:
+                paths[row, path_target_offset:] = paths[row, path_target_offset]
 
             # TRL tuple uses one strictly future same-trajectory full-state goal:
             # i < split < j and V(i,j) = V(i,split) V(split,j).
@@ -155,7 +226,7 @@ class CarRaceDataset:
                 split_states[row] = self.observations[index]
 
             max_base_offset = min(
-                self.path_horizon,
+                self.value_base_horizon,
                 int(self.episode_ends[index] - index + 1),
             )
             base_offset = int(rng.integers(1, max_base_offset + 1))
@@ -173,6 +244,18 @@ class CarRaceDataset:
             * (1.0 - self.terminals[idxs].astype(np.float32))
         ).astype(np.float32)
         path_goal_states = paths[:, -1]
+
+        h_a = max(1, int(self.action_chunk_horizon))
+        action_dim = int(self.actions.shape[-1])
+        action_chunks = np.zeros((batch_size, h_a, action_dim), dtype=np.float32)
+        action_chunk_next = np.empty_like(subgoal_value_goals)
+        for row, index in enumerate(idxs):
+            end = int(self.episode_ends[index])
+            for t in range(h_a):
+                src = min(int(index) + t, end)
+                action_chunks[row, t] = self.actions[src]
+            next_idx = min(int(index) + h_a, end)
+            action_chunk_next[row] = self.next_observations[next_idx]
 
         return {
             "observations": self.observations[idxs].astype(np.float32),
@@ -200,6 +283,8 @@ class CarRaceDataset:
             "high_actor_targets": path_goal_states.astype(np.float32),
             "subgoals": path_goal_states.astype(np.float32),
             "path_observations": paths.astype(np.float32),
+            "action_chunk_actions": action_chunks.reshape(batch_size, -1),
+            "action_chunk_next_observations": action_chunk_next.astype(np.float32),
         }
 
 
@@ -234,53 +319,96 @@ def _augment_task_view(
     raw_next_observations: np.ndarray,
     episode_ids: np.ndarray,
     task: TaskView,
+    *,
+    lap_directions: np.ndarray | None = None,
+    lap_start_angles: np.ndarray | None = None,
+    goal_radius: float = 0.07,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-    """Derive task context from one shared 8-D physical trajectory store."""
+    """Build navigation or waypoint-exact lap annotations over raw physics."""
     count = len(raw_observations)
-    observations = np.zeros((count, 10), dtype=np.float32)
-    next_observations = np.zeros((count, 10), dtype=np.float32)
+    state_dim = 10 if task == "navigation" else 14
+    observations = np.zeros((count, state_dim), dtype=np.float32)
+    next_observations = np.zeros((count, state_dim), dtype=np.float32)
     observations[:, :2] = raw_observations[:, :2]
-    observations[:, 4:] = raw_observations[:, 2:]
+    observations[:, 4:10] = raw_observations[:, 2:]
     next_observations[:, :2] = raw_next_observations[:, :2]
-    next_observations[:, 4:] = raw_next_observations[:, 2:]
+    next_observations[:, 4:10] = raw_next_observations[:, 2:]
     commanded_goals = np.zeros((count, 4), dtype=np.float32)
+
+    if task != "navigation" and (
+        lap_directions is None or lap_start_angles is None
+    ):
+        raise ValueError(
+            "lap task views require universal lap metadata; regenerate with "
+            "`python -m car_race.generate_dataset --task lap ...`"
+        )
 
     for episode_id in np.unique(episode_ids):
         indices = np.flatnonzero(episode_ids == episode_id)
-        final_xy = raw_next_observations[indices[-1], :2]
         if task == "navigation":
+            final_xy = raw_next_observations[indices[-1], :2]
             commanded_goals[indices, :2] = final_xy
             continue
 
+        assert lap_directions is not None and lap_start_angles is not None
+        directions = np.asarray(lap_directions[indices], dtype=np.int32)
+        start_angles = np.asarray(lap_start_angles[indices], dtype=np.float32)
+        direction = int(directions[0])
+        start_angle = float(start_angles[0])
+        if direction not in (-1, 1):
+            raise ValueError(f"episode {episode_id} has invalid lap direction")
+        if np.any(directions != direction) or not np.allclose(
+            start_angles, start_angle, atol=1e-6
+        ):
+            raise ValueError(f"episode {episode_id} has inconsistent lap metadata")
+
         ring_count = LAP_RING_COUNTS[task]
-        positions = np.concatenate(
-            [
-                raw_observations[indices[:1], :2],
-                raw_next_observations[indices, :2],
-            ],
-            axis=0,
+        waypoint_angles = start_angle + direction * np.arange(ring_count) * (
+            2.0 * np.pi / ring_count
         )
-        angles = np.unwrap(np.arctan2(positions[:, 1], positions[:, 0]))
-        net_rotation = float(angles[-1] - angles[0])
-        if abs(net_rotation) < 1e-5:
-            deltas = np.diff(angles)
-            net_rotation = float(deltas[np.argmax(np.abs(deltas))]) if len(deltas) else 1.0
-        direction = 1.0 if net_rotation >= 0.0 else -1.0
-        directed_turns = direction * (angles - angles[0]) / (2.0 * np.pi)
-        directed_turns = np.maximum.accumulate(np.maximum(directed_turns, 0.0))
-        progress = np.clip(
-            np.floor(directed_turns * ring_count + 1e-6) / ring_count,
-            0.0,
-            1.0,
+        waypoints = 0.575 * np.stack(
+            [np.cos(waypoint_angles), np.sin(waypoint_angles)], axis=1
         ).astype(np.float32)
-        observations[indices, 2] = progress[:-1]
-        next_observations[indices, 2] = progress[1:]
-        observations[indices, 3] = direction
-        next_observations[indices, 3] = direction
-        commanded_goals[indices] = np.array(
-            [positions[0, 0], positions[0, 1], 1.0, direction],
-            dtype=np.float32,
-        )
+        completed = 0
+        active_ordinal = 1
+        reached_previous = False
+
+        for index in indices:
+            active_index = active_ordinal % ring_count
+            waypoint = waypoints[active_index]
+            target_progress = min((completed + 1) / ring_count, 1.0)
+            index_normalized = active_index / max(ring_count - 1, 1)
+
+            observations[index, 2] = completed / ring_count
+            observations[index, 3] = direction
+            observations[index, 10:] = np.array(
+                [index_normalized, float(reached_previous), *waypoint],
+                dtype=np.float32,
+            )
+            commanded_goals[index] = np.array(
+                [*waypoint, target_progress, direction], dtype=np.float32
+            )
+
+            hit = bool(
+                np.linalg.norm(raw_next_observations[index, :2] - waypoint)
+                <= goal_radius
+            )
+            next_completed = min(completed + int(hit), ring_count)
+            next_active_ordinal = active_ordinal + int(hit and next_completed < ring_count)
+            next_active_index = next_active_ordinal % ring_count
+            next_waypoint = waypoints[next_active_index]
+            next_index_normalized = next_active_index / max(ring_count - 1, 1)
+
+            next_observations[index, 2] = next_completed / ring_count
+            next_observations[index, 3] = direction
+            next_observations[index, 10:] = np.array(
+                [next_index_normalized, float(hit), *next_waypoint],
+                dtype=np.float32,
+            )
+            completed = next_completed
+            active_ordinal = next_active_ordinal
+            reached_previous = hit
+
     return observations, next_observations, commanded_goals
 
 
@@ -289,18 +417,34 @@ def load_car_race_dataset(
     *,
     task: TaskView = "navigation",
     path_horizon: int = 8,
-    goal_relabel_prob: float = 0.8,
-    random_goal_prob: float = 0.1,
+    action_chunk_horizon: int = 5,
+    goal_relabel_prob: float | None = None,
+    checkpoint_goal_prob: float | None = None,
+    random_goal_prob: float = 0.0,
+    value_base_horizon: int = 5,
     goal_radius: float = 0.07,
 ) -> CarRaceDataset:
     """Create a task view over one shared physical-trajectory NPZ."""
-    if task not in ("navigation", "lap_2p", "lap_4p", "lap_8p"):
+    if task != "navigation" and task not in LAP_RING_COUNTS:
         raise ValueError(f"Unknown task view: {task}")
+    default_goal_mix = goal_relabel_prob is None
+    if goal_relabel_prob is None:
+        goal_relabel_prob = 1.0 if task == "navigation" else 0.30
+    if checkpoint_goal_prob is None:
+        checkpoint_goal_prob = (
+            0.20 if task != "navigation" and default_goal_mix else 0.0
+        )
     if path_horizon < 1:
         raise ValueError("path_horizon must be at least 1")
-    if goal_relabel_prob < 0.0 or random_goal_prob < 0.0:
+    if action_chunk_horizon < 1:
+        raise ValueError("action_chunk_horizon must be at least 1")
+    if (
+        goal_relabel_prob < 0.0
+        or checkpoint_goal_prob < 0.0
+        or random_goal_prob < 0.0
+    ):
         raise ValueError("goal sampling probabilities must be non-negative")
-    if goal_relabel_prob + random_goal_prob > 1.0:
+    if goal_relabel_prob + checkpoint_goal_prob + random_goal_prob > 1.0:
         raise ValueError("goal sampling probabilities must sum to at most 1")
 
     raw = np.load(Path(path))
@@ -339,19 +483,41 @@ def load_car_race_dataset(
     if episode_ids.shape != terminals.shape:
         raise ValueError("episode_ids must have shape (N,)")
     episode_ends = _episode_end_lookup(episode_ids, terminals)
+    lap_directions = (
+        np.asarray(raw["lap_directions"], dtype=np.int32)
+        if "lap_directions" in raw.files
+        else None
+    )
+    lap_start_angles = (
+        np.asarray(raw["lap_start_angles"], dtype=np.float32)
+        if "lap_start_angles" in raw.files
+        else None
+    )
+    if task != "navigation":
+        is_lap = (
+            np.asarray(raw["is_lap"], dtype=bool)
+            if "is_lap" in raw.files
+            else None
+        )
+        if is_lap is None or is_lap.shape != terminals.shape or not np.all(is_lap):
+            raise ValueError(
+                "lap task views require a universal lap dataset generated with --task lap"
+            )
     observations, next_observations, goals = _augment_task_view(
         raw_observations,
         raw_next_observations,
         episode_ids,
         task,
+        lap_directions=lap_directions,
+        lap_start_angles=lap_start_angles,
+        goal_radius=goal_radius,
     )
     indices = np.arange(len(observations), dtype=np.int64)
-    valid_indices = indices[
-        indices + int(path_horizon) - 1 <= episode_ends
-    ]
+    need = max(int(path_horizon), int(action_chunk_horizon))
+    valid_indices = indices[indices + need - 1 <= episode_ends]
     if len(valid_indices) == 0:
         raise ValueError(
-            f"no episode contains a full K={path_horizon} path"
+            f"no episode contains a full K={path_horizon} / h_a={action_chunk_horizon} window"
         )
     return CarRaceDataset(
         observations=observations,
@@ -362,10 +528,14 @@ def load_car_race_dataset(
         episode_ids=episode_ids,
         episode_ends=episode_ends,
         valid_indices=valid_indices,
+        task=task,
         path_horizon=int(path_horizon),
+        action_chunk_horizon=int(action_chunk_horizon),
         goal_relabel_prob=float(goal_relabel_prob),
+        checkpoint_goal_prob=float(checkpoint_goal_prob),
         random_goal_prob=float(random_goal_prob),
         goal_radius=float(goal_radius),
+        value_base_horizon=int(value_base_horizon),
     )
 
 
@@ -543,6 +713,7 @@ def _load_sequence_base(
         path,
         task=task,
         goal_relabel_prob=1.0,
+        checkpoint_goal_prob=0.0,
         random_goal_prob=0.0,
     )
 

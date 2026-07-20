@@ -8,22 +8,63 @@ from pathlib import Path
 import numpy as np
 
 
-def normalize_actions(actions: np.ndarray) -> np.ndarray:
-    """Map env actions (angle, throttle) -> roughly [-1, 1]^2."""
-    actions = np.asarray(actions, dtype=np.float32)
-    out = np.empty_like(actions)
-    out[..., 0] = actions[..., 0] / np.pi
-    out[..., 1] = actions[..., 1] * 2.0 - 1.0
-    return np.clip(out, -1.0, 1.0)
+LEGACY_ACTION_ENCODING = "angle_throttle"
+CARTESIAN_ACTION_ENCODING = "cartesian_thrust"
+SWINGBY_SCHEMA = "swingby"
+SWINGBY_SCHEMAS = frozenset({"taskmix_v2", SWINGBY_SCHEMA})
 
 
-def denormalize_actions(actions: np.ndarray) -> np.ndarray:
-    """Map network actions back to (angle ∈ [-π, π], throttle ∈ [0, 1])."""
+def read_dataset_metadata(path: str | Path) -> dict[str, str]:
+    with np.load(Path(path)) as raw:
+        schema = (
+            str(np.asarray(raw["dataset_schema"]).item())
+            if "dataset_schema" in raw.files
+            else "ballistic_v1"
+        )
+        encoding = (
+            str(np.asarray(raw["action_encoding"]).item())
+            if "action_encoding" in raw.files
+            else LEGACY_ACTION_ENCODING
+        )
+    return {"dataset_schema": schema, "action_encoding": encoding}
+
+
+def normalize_actions(
+    actions: np.ndarray, *, encoding: str = LEGACY_ACTION_ENCODING
+) -> np.ndarray:
+    """Map environment actions to the network's continuous 2-D action space."""
     actions = np.asarray(actions, dtype=np.float32)
     out = np.empty_like(actions)
-    out[..., 0] = np.clip(actions[..., 0], -1.0, 1.0) * np.pi
-    out[..., 1] = (np.clip(actions[..., 1], -1.0, 1.0) + 1.0) * 0.5
-    return out
+    if encoding == CARTESIAN_ACTION_ENCODING:
+        throttle = np.clip(actions[..., 1], 0.0, 1.0)
+        out[..., 0] = throttle * np.cos(actions[..., 0])
+        out[..., 1] = throttle * np.sin(actions[..., 0])
+    elif encoding == LEGACY_ACTION_ENCODING:
+        out[..., 0] = actions[..., 0] / np.pi
+        out[..., 1] = actions[..., 1] * 2.0 - 1.0
+    else:
+        raise ValueError(f"Unknown action encoding: {encoding!r}")
+    return np.clip(out, -1.0, 1.0).astype(np.float32)
+
+
+def denormalize_actions(
+    actions: np.ndarray, *, encoding: str = LEGACY_ACTION_ENCODING
+) -> np.ndarray:
+    """Map network actions back to environment ``(angle, throttle)``."""
+    actions = np.asarray(actions, dtype=np.float32)
+    out = np.empty_like(actions)
+    if encoding == CARTESIAN_ACTION_ENCODING:
+        x = np.clip(actions[..., 0], -1.0, 1.0)
+        y = np.clip(actions[..., 1], -1.0, 1.0)
+        throttle = np.clip(np.sqrt(x * x + y * y), 0.0, 1.0)
+        out[..., 0] = np.where(throttle > 1e-8, np.arctan2(y, x), 0.0)
+        out[..., 1] = throttle
+    elif encoding == LEGACY_ACTION_ENCODING:
+        out[..., 0] = np.clip(actions[..., 0], -1.0, 1.0) * np.pi
+        out[..., 1] = (np.clip(actions[..., 1], -1.0, 1.0) + 1.0) * 0.5
+    else:
+        raise ValueError(f"Unknown action encoding: {encoding!r}")
+    return out.astype(np.float32)
 
 
 def goal_success(
@@ -76,14 +117,20 @@ class SwingbyDataset:
     next_observations: np.ndarray
     terminals: np.ndarray
     commanded_goals: np.ndarray
+    successes: np.ndarray
+    commanded_goal_indices: np.ndarray
     episode_ids: np.ndarray
     episode_ends: np.ndarray
     valid_indices: np.ndarray
     path_horizon: int = 8
-    goal_relabel_prob: float = 0.8
-    random_goal_prob: float = 0.1
+    action_chunk_horizon: int = 5
+    goal_relabel_prob: float = 1.0
+    random_goal_prob: float = 0.0
     goal_radius: float = 0.075
     goal_velocity_tolerance: float = 0.35
+    value_base_horizon: int = 5
+    dataset_schema: str = "ballistic_v1"
+    action_encoding: str = LEGACY_ACTION_ENCODING
 
     def __len__(self) -> int:
         return int(self.observations.shape[0])
@@ -101,16 +148,12 @@ class SwingbyDataset:
     def _path(self, index: int) -> np.ndarray:
         k = self.path_horizon
         end = int(self.episode_ends[index])
-        if index + k - 1 > end:
-            raise ValueError(
-                f"path start {index} crosses episode end {end} for K={k}"
-            )
         path = np.empty(
             (k + 1, self.observations.shape[-1]), dtype=np.float32
         )
         path[0] = self.observations[index]
         for offset in range(1, k + 1):
-            transition_index = index + offset - 1
+            transition_index = min(index + offset - 1, end)
             path[offset] = self.next_observations[transition_index]
         return path
 
@@ -136,82 +179,108 @@ class SwingbyDataset:
         value_offsets = np.zeros(batch_size, dtype=np.int64)
         base_offsets = np.zeros(batch_size, dtype=np.int64)
         transitive_valid = np.zeros(batch_size, dtype=np.float32)
+        commanded_mask = np.zeros(batch_size, dtype=np.float32)
         paths = np.empty(
-            (
-                batch_size,
-                self.path_horizon + 1,
-                self.observations.shape[-1],
-            ),
+            (batch_size, self.path_horizon + 1, self.observations.shape[-1]),
             dtype=np.float32,
         )
 
-        for row, index in enumerate(idxs):
-            paths[row] = self._path(int(index))
+        for row, raw_index in enumerate(idxs):
+            index = int(raw_index)
+            paths[row] = self._path(index)
             draw = float(rng.random())
-            if draw < self.random_goal_prob:
-                goal_index = int(rng.integers(0, len(self.valid_indices)))
+            command_index = int(self.commanded_goal_indices[index])
+            can_command = command_index >= index
+            random_sample = draw < self.random_goal_prob
+            future_sample = (
+                draw < self.random_goal_prob + self.goal_relabel_prob
+                or not can_command
+            )
+
+            if random_sample:
                 random_index = int(
-                    self.valid_indices[goal_index]
+                    self.valid_indices[rng.integers(0, len(self.valid_indices))]
                 )
                 goals[row] = self.next_observations[random_index, :4]
-                subgoal_value_goals[row] = self.next_observations[
-                    random_index
-                ]
-            elif draw < self.random_goal_prob + self.goal_relabel_prob:
-                goal_index = self._future_index(rng, int(index))
-                goals[row] = self.next_observations[goal_index, :4]
-                subgoal_value_goals[row] = self.next_observations[goal_index]
+                subgoal_value_goals[row] = self.next_observations[random_index]
+                value_goal_index = self._future_index(rng, index)
+                value_goals[row] = self.next_observations[value_goal_index]
+                path_target_offset = self.path_horizon
+            elif future_sample:
+                value_goal_index = self._future_index(rng, index)
+                goals[row] = self.next_observations[value_goal_index, :4]
+                value_goals[row] = self.next_observations[value_goal_index]
+                subgoal_value_goals[row] = value_goals[row]
+                path_target_offset = min(
+                    self.path_horizon, value_goal_index - index + 1
+                )
             else:
+                value_goal_index = command_index
                 goals[row] = self.commanded_goals[index]
-                terminal_index = int(self.episode_ends[index])
-                subgoal_value_goals[row] = self.next_observations[terminal_index]
+                full_goal = self.next_observations[value_goal_index].copy()
+                full_goal[:4] = goals[row]
+                value_goals[row] = full_goal
+                subgoal_value_goals[row] = full_goal
+                commanded_mask[row] = 1.0
+                path_target_offset = min(
+                    self.path_horizon, value_goal_index - index + 1
+                )
 
-            value_goal_index = self._future_index(rng, int(index))
+            if path_target_offset < self.path_horizon:
+                paths[row, path_target_offset:] = paths[row, path_target_offset]
+
             total_offset = int(value_goal_index - index + 1)
             value_offsets[row] = total_offset
-            value_goals[row] = self.next_observations[value_goal_index]
             if total_offset >= 2:
                 split_offset = int(rng.integers(1, total_offset))
                 split_offsets[row] = split_offset
-                split_states[row] = self._state_at_offset(
-                    int(index), split_offset
-                )
+                split_states[row] = self._state_at_offset(index, split_offset)
                 transitive_valid[row] = 1.0
             else:
                 split_states[row] = self.observations[index]
 
             max_base_offset = min(
-                self.path_horizon,
+                self.value_base_horizon,
                 int(self.episode_ends[index] - index + 1),
             )
             base_offset = int(rng.integers(1, max_base_offset + 1))
             base_offsets[row] = base_offset
-            base_states[row] = self._state_at_offset(
-                int(index), base_offset
-            )
+            base_states[row] = self._state_at_offset(index, base_offset)
 
         next_observations = self.next_observations[idxs]
-        successes = goal_success(
+        batch_successes = goal_success(
             next_observations,
             goals,
             goal_radius=self.goal_radius,
             goal_velocity_tolerance=self.goal_velocity_tolerance,
         ).astype(np.float32)
         masks = (
-            (1.0 - successes)
+            (1.0 - batch_successes)
             * (1.0 - self.terminals[idxs].astype(np.float32))
         ).astype(np.float32)
         path_goal_states = paths[:, -1]
+
+        h_a = max(1, int(self.action_chunk_horizon))
+        action_dim = int(self.actions.shape[-1])
+        action_chunks = np.zeros((batch_size, h_a, action_dim), dtype=np.float32)
+        action_chunk_next = np.empty_like(subgoal_value_goals)
+        for row, raw_index in enumerate(idxs):
+            index = int(raw_index)
+            end = int(self.episode_ends[index])
+            for t in range(h_a):
+                action_chunks[row, t] = self.actions[min(index + t, end)]
+            action_chunk_next[row] = self.next_observations[min(index + h_a, end)]
 
         return {
             "observations": self.observations[idxs].astype(np.float32),
             "actions": self.actions[idxs].astype(np.float32),
             "next_observations": next_observations.astype(np.float32),
             "terminals": self.terminals[idxs].astype(np.float32),
-            "rewards": successes,
+            "rewards": batch_successes,
             "masks": masks,
             "goals": goals,
             "actor_goals": goals,
+            "commanded_goal_mask": commanded_mask,
             "subgoal_value_goals": subgoal_value_goals,
             "value_goals": value_goals,
             "value_base_goals": base_states.astype(np.float32),
@@ -227,6 +296,8 @@ class SwingbyDataset:
             "high_actor_targets": path_goal_states.astype(np.float32),
             "subgoals": path_goal_states.astype(np.float32),
             "path_observations": paths.astype(np.float32),
+            "action_chunk_actions": action_chunks.reshape(batch_size, -1),
+            "action_chunk_next_observations": action_chunk_next.astype(np.float32),
         }
 
 
@@ -237,6 +308,8 @@ class SwingbyGoalSequenceDataset:
     observations: np.ndarray
     actions: np.ndarray
     next_observations: np.ndarray
+    commanded_goals: np.ndarray
+    commanded_goal_indices: np.ndarray
     episode_ends: np.ndarray
     valid_indices: np.ndarray
     config: dict
@@ -260,25 +333,22 @@ class SwingbyGoalSequenceDataset:
             result[row] = int(rng.integers(int(index) + 1, end + 1))
         return result
 
-    def _goal_indices(
-        self,
-        rng: np.random.Generator,
-        indices: np.ndarray,
-        *,
-        prefix: str,
-    ) -> np.ndarray:
-        future = self._future_indices(rng, indices)
-        random_probability = float(
-            self.config.get(f"{prefix}_p_randomgoal", 0.0)
+    def _goal_targets(
+        self, rng: np.random.Generator, indices: np.ndarray
+    ) -> tuple[np.ndarray, np.ndarray]:
+        targets = self._future_indices(rng, indices)
+        goals = self.next_observations[targets, :4].copy()
+        probability = float(self.config.get("commanded_goal_prob", 0.0))
+        if probability <= 0.0:
+            return targets, goals
+        command_targets = self.commanded_goal_indices[indices]
+        use_command = (
+            (command_targets > indices)
+            & (rng.random(len(indices)) < probability)
         )
-        if random_probability <= 0.0:
-            return future
-        random_indices = rng.integers(0, len(self), size=len(indices))
-        return np.where(
-            rng.random(len(indices)) < random_probability,
-            random_indices,
-            future,
-        )
+        targets = np.where(use_command, command_targets, targets)
+        goals[use_command] = self.commanded_goals[indices[use_command]]
+        return targets, goals
 
 
 @dataclass
@@ -289,10 +359,7 @@ class SwingbyTRLDataset(SwingbyGoalSequenceDataset):
         self, rng: np.random.Generator, batch_size: int
     ) -> dict[str, np.ndarray]:
         indices = self._sample_indices(rng, batch_size)
-        value_goal_indices = self._future_indices(rng, indices)
-        actor_goal_indices = self._goal_indices(
-            rng, indices, prefix="actor"
-        )
+        value_goal_indices, goal_values = self._goal_targets(rng, indices)
         midpoint_indices = np.asarray(
             [
                 rng.integers(int(start), int(goal))
@@ -308,12 +375,8 @@ class SwingbyTRLDataset(SwingbyGoalSequenceDataset):
             "next_observations": self.next_observations[indices].astype(
                 np.float32
             ),
-            "value_goals": self.next_observations[
-                value_goal_indices, :4
-            ].astype(np.float32),
-            "actor_goals": self.next_observations[
-                actor_goal_indices, :4
-            ].astype(np.float32),
+            "value_goals": goal_values.astype(np.float32),
+            "actor_goals": goal_values.astype(np.float32),
             "value_offsets": (value_goal_indices - indices).astype(
                 np.float32
             ),
@@ -340,7 +403,7 @@ class SwingbyDQCDataset(SwingbyGoalSequenceDataset):
         self, rng: np.random.Generator, batch_size: int
     ) -> dict[str, np.ndarray]:
         indices = self._sample_indices(rng, batch_size)
-        goals = self._goal_indices(rng, indices, prefix="value")
+        goals, goal_values = self._goal_targets(rng, indices)
         horizon = int(self.config.get("backup_horizon", 8))
         ends = self.episode_ends[indices]
         backup = np.minimum(horizon, ends - indices)
@@ -363,9 +426,7 @@ class SwingbyDQCDataset(SwingbyGoalSequenceDataset):
             "next_observations": self.next_observations[indices].astype(
                 np.float32
             ),
-            "high_value_goals": self.next_observations[goals, :4].astype(
-                np.float32
-            ),
+            "high_value_goals": goal_values.astype(np.float32),
             "high_value_next_observations": self.observations[
                 next_indices
             ].astype(np.float32),
@@ -381,20 +442,36 @@ def load_swingby_dataset(
     path: str | Path,
     *,
     path_horizon: int = 8,
-    goal_relabel_prob: float = 0.8,
-    random_goal_prob: float = 0.1,
+    action_chunk_horizon: int = 5,
+    goal_relabel_prob: float | None = None,
+    random_goal_prob: float = 0.0,
+    value_base_horizon: int = 5,
     goal_radius: float = 0.075,
     goal_velocity_tolerance: float = 0.35,
 ) -> SwingbyDataset:
     """Load a swingby generate_dataset NPZ into a GCRL transition store."""
     if path_horizon < 1:
         raise ValueError("path_horizon must be at least 1")
+    if action_chunk_horizon < 1:
+        raise ValueError("action_chunk_horizon must be at least 1")
+
+    raw = np.load(Path(path))
+    dataset_schema = (
+        str(np.asarray(raw["dataset_schema"]).item())
+        if "dataset_schema" in raw.files
+        else "ballistic_v1"
+    )
+    action_encoding = (
+        str(np.asarray(raw["action_encoding"]).item())
+        if "action_encoding" in raw.files
+        else LEGACY_ACTION_ENCODING
+    )
+    if goal_relabel_prob is None:
+        goal_relabel_prob = 0.5 if dataset_schema in SWINGBY_SCHEMAS else 1.0
     if goal_relabel_prob < 0.0 or random_goal_prob < 0.0:
         raise ValueError("goal sampling probabilities must be non-negative")
     if goal_relabel_prob + random_goal_prob > 1.0:
         raise ValueError("goal sampling probabilities must sum to at most 1")
-
-    raw = np.load(Path(path))
     required = {
         "observations",
         "actions",
@@ -407,10 +484,18 @@ def load_swingby_dataset(
         raise ValueError(f"dataset is missing fields: {sorted(missing)}")
 
     observations = np.asarray(raw["observations"], dtype=np.float32)
-    actions = normalize_actions(np.asarray(raw["actions"], dtype=np.float32))
+    actions = normalize_actions(
+        np.asarray(raw["actions"], dtype=np.float32),
+        encoding=action_encoding,
+    )
     next_observations = np.asarray(raw["next_observations"], dtype=np.float32)
     terminals = np.asarray(raw["terminals"], dtype=bool)
     commanded_goals = np.asarray(raw["commanded_goals"], dtype=np.float32)
+    successes = (
+        np.asarray(raw["successes"], dtype=bool)
+        if "successes" in raw.files
+        else goal_success(next_observations, commanded_goals)
+    )
 
     if observations.ndim != 2 or observations.shape[1] != 5:
         raise ValueError("observations must have shape (N, 5)")
@@ -422,6 +507,8 @@ def load_swingby_dataset(
         raise ValueError("commanded_goals must have shape (N, 4)")
     if terminals.shape != (len(observations),):
         raise ValueError("terminals must have shape (N,)")
+    if successes.shape != terminals.shape:
+        raise ValueError("successes must have shape (N,)")
 
     episode_ids = (
         np.asarray(raw["episode_ids"], dtype=np.int32)
@@ -431,13 +518,29 @@ def load_swingby_dataset(
     if episode_ids.shape != terminals.shape:
         raise ValueError("episode_ids must have shape (N,)")
     episode_ends = _episode_end_lookup(episode_ids, terminals)
+    commanded_goal_indices = np.full(len(observations), -1, dtype=np.int64)
+    segment_start = 0
+    for index in range(1, len(observations) + 1):
+        boundary = index == len(observations) or (
+            episode_ids[index] != episode_ids[index - 1]
+            or np.any(commanded_goals[index] != commanded_goals[index - 1])
+        )
+        if not boundary:
+            continue
+        reached = np.flatnonzero(successes[segment_start:index])
+        if len(reached):
+            target = segment_start + int(reached[0])
+            commanded_goal_indices[segment_start : target + 1] = target
+        segment_start = index
     indices = np.arange(len(observations), dtype=np.int64)
-    valid_indices = indices[
-        indices + int(path_horizon) - 1 <= episode_ends
-    ]
+    if dataset_schema in SWINGBY_SCHEMAS:
+        valid_indices = indices
+    else:
+        need = max(int(path_horizon), int(action_chunk_horizon))
+        valid_indices = indices[indices + need - 1 <= episode_ends]
     if len(valid_indices) == 0:
         raise ValueError(
-            f"no episode contains a full K={path_horizon} path"
+            f"no episode contains a valid K={path_horizon} / h_a={action_chunk_horizon} window"
         )
     return SwingbyDataset(
         observations=observations,
@@ -445,14 +548,20 @@ def load_swingby_dataset(
         next_observations=next_observations,
         terminals=terminals,
         commanded_goals=commanded_goals,
+        successes=successes,
+        commanded_goal_indices=commanded_goal_indices,
         episode_ids=episode_ids,
         episode_ends=episode_ends,
         valid_indices=valid_indices,
         path_horizon=int(path_horizon),
+        action_chunk_horizon=int(action_chunk_horizon),
         goal_relabel_prob=float(goal_relabel_prob),
         random_goal_prob=float(random_goal_prob),
         goal_radius=float(goal_radius),
         goal_velocity_tolerance=float(goal_velocity_tolerance),
+        value_base_horizon=int(value_base_horizon),
+        dataset_schema=dataset_schema,
+        action_encoding=action_encoding,
     )
 
 
@@ -473,13 +582,19 @@ def _load_goal_sequence_base(
             )
     if not valid_parts:
         raise ValueError(f"no valid indices for TRL/DQC in {path}")
+    sequence_config = dict(config)
+    sequence_config.setdefault(
+        "commanded_goal_prob", 0.5 if data.dataset_schema in SWINGBY_SCHEMAS else 0.0
+    )
     return SwingbyGoalSequenceDataset(
         observations=data.observations,
         actions=data.actions,
         next_observations=data.next_observations,
+        commanded_goals=data.commanded_goals,
+        commanded_goal_indices=data.commanded_goal_indices,
         episode_ends=data.episode_ends,
         valid_indices=np.concatenate(valid_parts),
-        config=dict(config),
+        config=sequence_config,
     )
 
 
@@ -491,6 +606,8 @@ def load_swingby_trl_dataset(
         observations=base.observations,
         actions=base.actions,
         next_observations=base.next_observations,
+        commanded_goals=base.commanded_goals,
+        commanded_goal_indices=base.commanded_goal_indices,
         episode_ends=base.episode_ends,
         valid_indices=base.valid_indices,
         config=base.config,
@@ -506,6 +623,8 @@ def load_swingby_dqc_dataset(
         observations=base.observations,
         actions=base.actions,
         next_observations=base.next_observations,
+        commanded_goals=base.commanded_goals,
+        commanded_goal_indices=base.commanded_goal_indices,
         episode_ends=base.episode_ends,
         valid_indices=base.valid_indices,
         config=base.config,

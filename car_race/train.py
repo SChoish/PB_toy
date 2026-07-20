@@ -1,4 +1,4 @@
-"""Train / evaluate hazard-env agents on shared CarRace offline datasets."""
+"""Train / evaluate agents on shared CarRace offline datasets."""
 
 from __future__ import annotations
 
@@ -25,9 +25,12 @@ from .env import GRAVITY_STRENGTHS, CarRaceConfig, CarRaceEnv, mode_config_kwarg
 from .generate_dataset import dataset_stem
 
 ENVS = tuple(GRAVITY_STRENGTHS)
-TASKS = ("navigation", "lap_2p", "lap_4p", "lap_8p")
-LAP_CHECKPOINT_COUNTS = {"lap_2p": 3, "lap_4p": 5, "lap_8p": 9}
+LAP_CHECKPOINT_COUNTS = {f"lap_{n}p": n + 1 for n in range(1, 9)}
+TASKS = ("navigation", *LAP_CHECKPOINT_COUNTS)
 TASK_IDS = (1, 2, 3, 4, 5)
+LAP_TASK_SCHEMA = "lap"
+# Older lap runs used these schema labels.
+_LEGACY_LAP_TASK_SCHEMAS = frozenset({LAP_TASK_SCHEMA, "lap_v2", "waypoint_v2"})
 
 # Fixed navigation eval suite on the safe ring (matches demo geometry).
 _R = 0.575
@@ -90,9 +93,13 @@ def _make_eval_env(
     )
 
 
-def _default_dataset(env_name: str, *, size: str = "100k") -> pathlib.Path:
+def _default_dataset(
+    env_name: str, task: str, *, size: str = "100k"
+) -> pathlib.Path:
     root = pathlib.Path(__file__).resolve().parent / "datasets"
-    return root / f"{dataset_stem(env_name, 'expert', size)}.npz"  # type: ignore[arg-type]
+    dataset_task = "navigation" if task == "navigation" else "lap"
+    stem = dataset_stem(env_name, "expert", size, dataset_task)  # type: ignore[arg-type]
+    return root / f"{stem}.npz"
 
 
 def _to_jnp(batch: dict) -> dict:
@@ -230,6 +237,8 @@ def _load_dataset(agent_name: str, dataset_path: pathlib.Path, task: str, config
         dataset_path,
         task=task,  # type: ignore[arg-type]
         path_horizon=int(config.get("subgoal_steps", 8)),
+        action_chunk_horizon=int(config.get("action_chunk_horizon", 5)),
+        value_base_horizon=int(config.get("value_base_horizon", 5)),
     )
 
 
@@ -356,6 +365,17 @@ def evaluate(
                         chunk_index=chunk_index,
                     )
                     ob, _r, terminated, truncated, info = env.step(action)
+                    next_goal = np.asarray(info["goal"], dtype=np.float32)
+                    if not np.array_equal(next_goal, goal):
+                        goal = next_goal
+                        value_goal = (
+                            value_goal_resolver(goal)
+                            if _uses_action_chunks(agent)
+                            and value_goal_resolver is not None
+                            else None
+                        )
+                        action_chunk = None
+                        chunk_index = 0
                     done = bool(terminated or truncated)
                 succ = float(info.get("is_success", False))
                 dead = float(info.get("dead", False))
@@ -491,8 +511,21 @@ def load_checkpoint(
     pack_path = checkpoint_dir / f"step_{steps}.msgpack"
     metadata = json.loads(meta_path.read_text(encoding="utf-8"))
     config = metadata["config"]
+    if task != "navigation" and config.get("task_schema") not in _LEGACY_LAP_TASK_SCHEMAS:
+        raise ValueError(
+            "This lap checkpoint predates the current lap state/goal schema. "
+            "Retrain it under the current lap_* checkpoint naming "
+            f"(task_schema={LAP_TASK_SCHEMA!r})."
+        )
     if isinstance(config.get("hidden_dims"), list):
         config["hidden_dims"] = tuple(config["hidden_dims"])
+    # Eval BoN count + φ recipe are not sticky from old ckpts.
+    if agent_name in ("pbg", "pbf"):
+        fresh = DEFAULT_CONFIGS[agent_name]()
+        config["subgoal_eval_num_samples"] = int(fresh["subgoal_eval_num_samples"])
+        config["phi_goal_obs_indices"] = (0, 1, 2, 3)
+        config["subgoal_value_goal_representation"] = "full"
+        config["env_name"] = str(config.get("env_name") or "car_race")
     data = _load_dataset(agent_name, dataset_path, task, config)
     if agent_name in ("trl", "dqc"):
         example = _to_jnp(data.sample(np.random.default_rng(0), 8))
@@ -536,7 +569,7 @@ def render_agent(
     """Render each task once into both ``env/`` and ``overlay/`` videos."""
     import imageio.v2 as imageio
 
-    from hazard_env.utils.rendering import (
+    from agents.rendering import (
         collect_agent_diagnostics,
         compose_diagnostic_frame,
     )
@@ -665,6 +698,18 @@ def render_agent(
                         )
                     )
                     ob, _reward, terminated, truncated, _info = env.step(action)
+                    next_goal = np.asarray(_info["goal"], dtype=np.float32)
+                    if not np.array_equal(next_goal, goal):
+                        goal = next_goal
+                        value_goal = (
+                            value_goal_resolver(goal)
+                            if is_pathbridger and value_goal_resolver is not None
+                            else None
+                        )
+                        action_chunk = None
+                        chunk_index = 0
+                        cached_value_field = None
+                        cached_policy_diagnostic = {}
                     trail.append(np.asarray(ob, dtype=np.float32).copy())
                     done = bool(terminated or truncated)
 
@@ -759,6 +804,12 @@ def train(
     if config_overrides:
         config.update(config_overrides)
     config["goal_dim"] = 4
+    config["env_name"] = env_name
+    if task != "navigation":
+        config["task_schema"] = LAP_TASK_SCHEMA
+    if agent_name in ("pbg", "pbf"):
+        config["phi_goal_obs_indices"] = (0, 1, 2, 3)
+        config["subgoal_value_goal_representation"] = "full"
 
     data = _load_dataset(agent_name, dataset_path, task, config)
     value_goal_resolver = (
@@ -893,7 +944,9 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> None:
     args = parse_args()
-    dataset = args.dataset or _default_dataset(args.env, size=args.dataset_size)
+    dataset = args.dataset or _default_dataset(
+        args.env, args.task, size=args.dataset_size
+    )
     agent, _metrics = train(
         agent_name=args.agent,
         dataset_path=dataset,

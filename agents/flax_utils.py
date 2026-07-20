@@ -1,4 +1,4 @@
-"""Minimal Flax train helpers for hazard_env agents."""
+"""Minimal Flax train helpers for toy-suite agents."""
 
 from __future__ import annotations
 
