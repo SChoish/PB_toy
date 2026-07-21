@@ -904,6 +904,30 @@ def train(
     return agent, metrics
 
 
+def _horizon_overrides(
+    agent_name: str,
+    *,
+    subgoal_steps: int | None,
+    action_chunk_horizon: int | None,
+) -> dict:
+    """Apply K / h_a overrides. h_a only affects PathBridger."""
+    overrides: dict = {}
+    if subgoal_steps is not None:
+        if subgoal_steps < 1:
+            raise SystemExit("--subgoal-steps must be >= 1")
+        overrides["subgoal_steps"] = subgoal_steps
+        if agent_name in ("pbg", "pbf"):
+            overrides["dynamics_N"] = subgoal_steps
+            overrides["full_chunk_horizon"] = subgoal_steps
+    if action_chunk_horizon is not None:
+        if action_chunk_horizon < 1:
+            raise SystemExit("--action-chunk-horizon must be >= 1")
+        if agent_name in ("pbg", "pbf"):
+            overrides["action_chunk_horizon"] = action_chunk_horizon
+            overrides["forward_bridge_path_loss_horizon"] = action_chunk_horizon
+    return overrides
+
+
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--agent", choices=sorted(AGENTS), required=True)
@@ -918,6 +942,8 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--checkpoint-dir", type=pathlib.Path, default=None)
     p.add_argument("--render-dir", type=pathlib.Path, default=None)
     p.add_argument("--num-eval-envs", type=int, default=25)
+    p.add_argument("--subgoal-steps", type=int, default=None)
+    p.add_argument("--action-chunk-horizon", type=int, default=None)
     return p.parse_args()
 
 
@@ -925,6 +951,11 @@ def main() -> None:
     args = parse_args()
     dataset = args.dataset or _default_dataset(
         args.env, args.task, size=args.dataset_size
+    )
+    overrides = _horizon_overrides(
+        args.agent,
+        subgoal_steps=args.subgoal_steps,
+        action_chunk_horizon=args.action_chunk_horizon,
     )
     agent, _metrics = train(
         agent_name=args.agent,
@@ -935,6 +966,7 @@ def main() -> None:
         seed=args.seed,
         eval_every=args.eval_every,
         log_every=args.log_every,
+        config_overrides=overrides or None,
         checkpoint_dir=args.checkpoint_dir,
         num_eval_envs=args.num_eval_envs,
     )
