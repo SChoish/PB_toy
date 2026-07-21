@@ -8,7 +8,7 @@ import optax
 
 _VALUE_EXPECTILE = 0.7
 _VALUE_BASE_HORIZON = 5.0
-_VALUE_DISTANCE_WEIGHT_POWER = 1.0
+_VALUE_DISTANCE_WEIGHT_POWER = 0.0
 _VALUE_DISTANCE_WEIGHT_CLIP_MIN = 0.05
 _VALUE_DISTANCE_WEIGHT_CLIP_MAX = 1.0
 
@@ -33,7 +33,7 @@ def transitive_value_loss(
     grad_params,
     *,
     discount: float,
-    distance_weight_power: float = 1.0,
+    distance_weight_power: float = _VALUE_DISTANCE_WEIGHT_POWER,
     goal_dim: int | None = None,
     eps: float = 1e-6,
 ):

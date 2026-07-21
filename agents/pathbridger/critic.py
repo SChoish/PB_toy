@@ -539,7 +539,7 @@ def get_config():
             clip_chunk_to_goal=True,
             value_hidden_dims=(256, 256),
             discount=0.995,
-            value_distance_weight_power=1.0,
+            value_distance_weight_power=0.0,
             rescore_single_candidate=False,
             action_dim=2,
             value_p_curgoal=0.0,

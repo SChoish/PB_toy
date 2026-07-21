@@ -75,6 +75,9 @@ class TRHIQLAgent(flax.struct.PyTreeNode):
                 batch,
                 params,
                 discount=float(self.config.get("discount", 0.99)),
+                distance_weight_power=float(
+                    self.config.get("distance_weight_power", 0.0)
+                ),
                 goal_dim=int(self.config.get("goal_dim", 4)),
             )
             low_loss, low_info = self.low_actor_loss(batch, params)
@@ -170,4 +173,6 @@ def default_config():
         "batch_size": 256,
         "subgoal_steps": 25,
         "goal_dim": 4,
+        # 0 → uniform tri weights (same as TRL lam=0).
+        "distance_weight_power": 0.0,
     }

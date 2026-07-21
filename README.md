@@ -1,13 +1,14 @@
 # PathBridger toy examples
 
-Offline GCRL toy suite: shared agents and two continuous control environments
-(CarRace, Orbital Swing-by), plus concept figures.
+Offline GCRL toy suite: shared agents and three continuous control environments
+(CarRace, CarParking, Orbital Swing-by), plus concept figures.
 
 **Repo:** https://github.com/SChoish/PB_toy
 
 ```
 toy_examples/
 ├── agents/        # BC, HIQL, TR-HIQL, TRL, DQC, PBG, PBF
+├── car_parking/   # parallel, T-bay, and angled low-speed parking
 ├── car_race/      # annular navigation + lap racing
 ├── swingby/       # orbital flyby / swing-by
 └── concept/       # PathBridger concept figures
@@ -74,6 +75,24 @@ python -m car_race.generate_dataset --generate-all --task lap
 python -m car_race.train --env car_race_plain --agent pbg --task navigation \
   --dataset-size 100k --steps 50000
 ```
+
+## CarParking
+
+Parking reuses CarRace's normalized `[steering, throttle_or_brake]` action and
+`state` / `state_goal` / `goal_dict` observation surfaces. It adds parallel,
+forward/reverse T-bay, and angled layouts. A success requires the complete
+oriented car body to fit in the bay with the requested heading and low speed
+for a configurable dwell time; parked cars and curbs use oriented-box collision.
+
+```python
+from car_parking import CarParkingConfig, CarParkingEnv
+
+env = CarParkingEnv(CarParkingConfig(maneuver="t_reverse"))
+observation, info = env.reset(options={"task_id": 3})
+```
+
+See [`car_parking/README.md`](car_parking/README.md) for registered IDs and the
+state/goal contract.
 
 ## Powered Orbital Flyby (`swingby` API)
 

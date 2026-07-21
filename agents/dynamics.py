@@ -76,6 +76,8 @@ def _merge_critic_config(overrides: dict | None = None) -> dict:
             "phi_goal_obs_indices": (),
             "discount": 0.99,
             "value_hidden_dims": (256, 256),
+            # 0 → uniform tri weights (same as TRL lam=0).
+            "value_distance_weight_power": 0.0,
         }
     )
     if overrides:
@@ -268,6 +270,9 @@ class PathBridgerAgent(flax.struct.PyTreeNode):
                 "env_name": str(config.get("env_name", dyn_cfg.get("env_name", "car_race"))),
                 "goal_representation": "full",
                 "phi_goal_obs_indices": (),
+                "value_distance_weight_power": float(
+                    config.get("value_distance_weight_power", 0.0)
+                ),
             }
         )
         h_a = int(crit_cfg["action_chunk_horizon"])

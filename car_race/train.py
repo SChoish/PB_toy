@@ -509,6 +509,9 @@ def load_checkpoint(
         config["phi_goal_obs_indices"] = (0, 1, 2, 3)
         config["subgoal_value_goal_representation"] = "full"
         config["env_name"] = str(config.get("env_name") or "car_race")
+        config["value_distance_weight_power"] = 0.0
+    if agent_name == "tr_hiql":
+        config["distance_weight_power"] = 0.0
     data = _load_dataset(agent_name, dataset_path, task, config)
     if agent_name in ("trl", "dqc"):
         example = _to_jnp(data.sample(np.random.default_rng(0), 8))
@@ -789,6 +792,9 @@ def train(
     if agent_name in ("pbg", "pbf"):
         config["phi_goal_obs_indices"] = (0, 1, 2, 3)
         config["subgoal_value_goal_representation"] = "full"
+        config["value_distance_weight_power"] = 0.0
+    if agent_name == "tr_hiql":
+        config["distance_weight_power"] = 0.0
 
     data = _load_dataset(agent_name, dataset_path, task, config)
     value_goal_resolver = (

@@ -65,8 +65,9 @@ include-package-data = false
 
 [tool.setuptools.packages.find]
 where = ["."]
-include = ["agents*", "car_race*", "concept*", "swingby*"]
+include = ["agents*", "car_parking*", "car_race*", "concept*", "swingby*"]
 exclude = [
+    "car_parking.tests*",
     "car_race.tests*",
     "concept.tests*",
     "swingby.tests*",
@@ -74,10 +75,12 @@ exclude = [
 
 [tool.setuptools.package-data]
 agents = ["HYPERPARAMETERS.md"]
+car_parking = ["*.md", "demo/*.md", "demo/*.png"]
 
 [tool.pytest.ini_options]
 addopts = "-ra"
 testpaths = [
+    "car_parking/tests",
     "car_race/tests",
     "concept/tests",
     "swingby/tests",

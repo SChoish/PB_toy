@@ -26,7 +26,8 @@ export AGENTS="${AGENTS:-hiql tr_hiql pbg pbf trl}"
 export CAR_ENVS="${CAR_ENVS:-car_race_ice car_race_grav car_race_anti_grav}"
 export CAR_TASKS="${CAR_TASKS:-navigation lap_2p}"
 export POLICIES="${POLICIES:-expert noisy random}"
-export SWING_ENVS="${SWING_ENVS:-swingby_planet swingby_blackhole}"
+# Empty SWING_ENVS skips swingby (use ${VAR-default}, not :- , so "" is preserved).
+export SWING_ENVS="${SWING_ENVS-swingby_planet swingby_blackhole}"
 export SWING_DATASET_MODE=swingby
 export SIZE SEED STEPS EVAL_EVERY LOG_EVERY
 
