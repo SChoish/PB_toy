@@ -37,10 +37,11 @@ def render_demos(output_dir: Path, render_size: int = 512) -> list[Path]:
 
     columns = 3
     rows = 2
-    label_height = max(28, render_size // 14)
+    frame_height, frame_width = frames[0].shape[:2]
+    label_height = max(28, frame_width // 14)
     overview = Image.new(
         "RGB",
-        (columns * render_size, rows * (render_size + label_height)),
+        (columns * frame_width, rows * (frame_height + label_height)),
         (12, 16, 20),
     )
     draw = ImageDraw.Draw(overview)
@@ -54,10 +55,10 @@ def render_demos(output_dir: Path, render_size: int = 512) -> list[Path]:
     for index, (frame, label) in enumerate(zip(frames, labels)):
         column = index % columns
         row = index // columns
-        x = column * render_size
-        y = row * (render_size + label_height)
+        x = column * frame_width
+        y = row * (frame_height + label_height)
         overview.paste(Image.fromarray(frame), (x, y))
-        draw.text((x + 10, y + render_size + 7), label, fill=(232, 238, 240))
+        draw.text((x + 10, y + frame_height + 7), label, fill=(232, 238, 240))
 
     overview_path = output_dir / "overview.png"
     overview.save(overview_path)

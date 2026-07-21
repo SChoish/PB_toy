@@ -16,8 +16,11 @@ from .hybrid_astar import HybridAStarPlanner, PathPoint, PlannerConfig
 class RolloutResult:
     task_id: int | None
     success: bool
+    dead: bool
     collision: bool
     timeout: bool
+    minimum_health: float
+    total_health_loss: float
     steps: int
     replans: int
     path_points: int
@@ -263,12 +266,19 @@ def rollout_expert(
     return RolloutResult(
         task_id=task_id,
         success=bool(info.get("success")),
-        collision=bool(info.get("collision")),
+        dead=bool(info.get("dead")),
+        collision=any(bool(step_info.get("collision")) for step_info in infos),
         timeout=bool(truncated),
+        minimum_health=min(
+            (float(step_info["health"]) for step_info in infos),
+            default=float(env.health),
+        ),
+        total_health_loss=sum(
+            float(step_info.get("health_loss", 0.0)) for step_info in infos
+        ),
         steps=len(actions),
         replans=policy.replans,
         path_points=len(path),
         actions=actions,
         infos=infos,
     )
-

@@ -52,8 +52,8 @@ passed to the agent and `info["success"]` reports task completion. Datasets use
 regular transition tuples with explicit `next_observations`. Train/validation
 splits use disjoint seeds and retain whole episodes. `terminals` marks trajectory
 boundaries, while goal-conditioned Bellman masks are computed separately from
-the relabeled goal success and true absorbing failures (collision/death/escape),
-not from time-limit boundaries.
+the relabeled goal success and true absorbing failures (health depletion,
+death, or escape), not from recoverable contacts or time-limit boundaries.
 
 ## CarRace
 

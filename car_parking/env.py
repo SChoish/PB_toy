@@ -3,8 +3,10 @@
 The dynamics and public observation modes intentionally mirror ``car_race``.
 Unlike racing, parking success is pose based: the complete oriented vehicle
 must be inside the bay, aligned with it, and nearly stationary for a short
-dwell period.  Layouts use a lane-consistent approach convention and parked
-vehicles have the same physical footprint as the controllable vehicle.
+dwell period.  Layouts use a lane-consistent approach convention, parked
+vehicles have the same footprint as the controllable vehicle, and collisions
+cause cumulative impulse-proportional damage instead of an unconditional
+one-touch termination.
 """
 
 from __future__ import annotations
@@ -82,11 +84,25 @@ class CarParkingConfig:
 
     maneuver: ParkingManeuver = "mixed"
     max_episode_steps: int = 400
-    terminate_on_collision: bool = True
+    # Default behavior is cumulative damage.  Set this to True only when an
+    # immediate terminal collision is explicitly desired for an ablation.
+    terminate_on_collision: bool = False
     orientation_tolerance: float = np.deg2rad(10.0)
     parked_speed_tolerance: float = 0.025
     slot_margin: float = 0.008
     dwell_steps: int = 8
+
+    # Collision damage.  The deliberately small capacity makes the environment
+    # unforgiving: a gentle normal contact at 0.05 world-units/s removes about
+    # 15% of full health, a 0.10 contact removes about 30%, and a hard impact can
+    # destroy the car in one hit.
+    initial_health: float = 1.0
+    damage_capacity: float = 0.32
+    impact_impulse_scale: float = 0.95
+    collision_restitution: float = 0.05
+    min_effective_impact_speed: float = 0.025
+    glancing_impact_fraction: float = 0.35
+    health_bar_tau: float = 0.045
 
     reward_mode: RewardMode = "dense"
     step_penalty: float = 0.002
@@ -95,7 +111,9 @@ class CarParkingConfig:
     orientation_scale: float = 0.25
     containment_bonus: float = 0.08
     success_reward: float = 2.0
-    collision_penalty: float = -2.0
+    collision_penalty: float = -0.05
+    damage_penalty_scale: float = 0.35
+    death_penalty: float = -2.0
 
     def validate(self) -> None:
         if not self.arena_low < self.arena_high:
@@ -124,6 +142,20 @@ class CarParkingConfig:
             raise ValueError("orientation_tolerance must be in (0, pi/2)")
         if self.parked_speed_tolerance < 0.0 or self.slot_margin < 0.0:
             raise ValueError("parking tolerances must be non-negative")
+        if self.initial_health <= 0.0 or self.damage_capacity <= 0.0:
+            raise ValueError("initial_health and damage_capacity must be positive")
+        if self.impact_impulse_scale < 0.0:
+            raise ValueError("impact_impulse_scale must be non-negative")
+        if not 0.0 <= self.collision_restitution <= 1.0:
+            raise ValueError("collision_restitution must be in [0, 1]")
+        if self.min_effective_impact_speed < 0.0:
+            raise ValueError("min_effective_impact_speed must be non-negative")
+        if not 0.0 <= self.glancing_impact_fraction <= 1.0:
+            raise ValueError("glancing_impact_fraction must be in [0, 1]")
+        if self.health_bar_tau <= 0.0:
+            raise ValueError("health_bar_tau must be positive")
+        if self.damage_penalty_scale < 0.0:
+            raise ValueError("damage_penalty_scale must be non-negative")
         if self.reward_mode not in ("sparse", "dense"):
             raise ValueError(f"Unknown reward_mode: {self.reward_mode}")
 
@@ -172,6 +204,49 @@ def _boxes_overlap(first: OrientedBox, second: OrientedBox) -> bool:
         if projection_a.max() < projection_b.min() or projection_b.max() < projection_a.min():
             return False
     return True
+
+
+def _box_contact_normal(
+    moving: OrientedBox,
+    obstacle: OrientedBox,
+) -> tuple[Array, float] | None:
+    """Return an outward contact normal and penetration depth for two boxes.
+
+    The normal points from ``obstacle`` toward ``moving``.  This is a compact
+    separating-axis contact estimate; it is used only for impact magnitude and
+    does not change the oriented-box collision criterion.
+    """
+    moving_corners = _box_corners(moving)
+    obstacle_corners = _box_corners(obstacle)
+    axes: list[Array] = []
+    for polygon in (moving_corners, obstacle_corners):
+        edges = np.roll(polygon, -1, axis=0) - polygon
+        for edge in edges[:2]:
+            normal = np.array([-edge[1], edge[0]], dtype=np.float64)
+            normal /= max(float(np.linalg.norm(normal)), 1e-12)
+            axes.append(normal)
+
+    best_axis: Array | None = None
+    minimum_overlap = np.inf
+    for axis in axes:
+        moving_projection = moving_corners @ axis
+        obstacle_projection = obstacle_corners @ axis
+        overlap = min(moving_projection.max(), obstacle_projection.max()) - max(
+            moving_projection.min(), obstacle_projection.min()
+        )
+        if overlap < 0.0:
+            return None
+        if overlap < minimum_overlap:
+            minimum_overlap = float(overlap)
+            best_axis = axis.copy()
+
+    assert best_axis is not None
+    center_delta = np.asarray(moving.center, dtype=np.float64) - np.asarray(
+        obstacle.center, dtype=np.float64
+    )
+    if float(np.dot(best_axis, center_delta)) < 0.0:
+        best_axis = -best_axis
+    return best_axis.astype(np.float32), float(minimum_overlap)
 
 
 def _opposite_island(
@@ -409,7 +484,7 @@ class CarParkingEnv(gym.Env):
 
     Actions are normalized ``[steering, throttle/brake]`` in ``[-1, 1]^2``.
     The state is ``[x, y, cos(yaw), sin(yaw), speed, normalized_steering,
-    distance_to_slot, normalized_yaw_error, inside_slot, collision]``.
+    distance_to_slot, normalized_yaw_error, inside_slot, health]``.
     The first four elements are also the achieved-goal representation.
     """
 
@@ -465,7 +540,7 @@ class CarParkingEnv(gym.Env):
                 3.0,
                 1.0,
                 1.0,
-                1.0,
+                self.config.initial_health,
             ],
             dtype=self._dtype,
         )
@@ -501,7 +576,14 @@ class CarParkingEnv(gym.Env):
         self.elapsed_steps = 0
         self.dwell_count = 0
         self.collision = False
+        self.dead = False
         self.success = False
+        self.health = float(self.config.initial_health)
+        self._display_health = float(self.config.initial_health)
+        self.step_impulse = 0.0
+        self.total_impulse = 0.0
+        self.health_loss = 0.0
+        self._containment_awarded = False
         self.cur_task_id: int | None = None
         self.layout = _layout(
             "parallel",
@@ -580,7 +662,7 @@ class CarParkingEnv(gym.Env):
                 self.distance_to_goal,
                 self.heading_error / np.pi,
                 float(self.fully_inside_slot),
-                float(self.collision),
+                float(self.health),
             ],
             dtype=self._dtype,
         )
@@ -633,6 +715,9 @@ class CarParkingEnv(gym.Env):
         )
         self.speed = float(options.pop("speed", 0.0))
         self.steering = float(options.pop("steering", 0.0))
+        health = float(options.pop("health", self.config.initial_health))
+        if not 0.0 < health <= self.config.initial_health:
+            raise ValueError("health must be in (0, initial_health]")
         if options:
             raise ValueError(f"Unknown reset options: {tuple(options)}")
         if not -self.config.max_reverse_speed <= self.speed <= self.config.max_speed:
@@ -645,7 +730,14 @@ class CarParkingEnv(gym.Env):
         self.elapsed_steps = 0
         self.dwell_count = 0
         self.collision = False
+        self.dead = False
         self.success = False
+        self.health = health
+        self._display_health = health
+        self.step_impulse = 0.0
+        self.total_impulse = 0.0
+        self.health_loss = 0.0
+        self._containment_awarded = False
         observation = self._get_observation()
         info = self._get_info(termination_reason=None)
         if self.render_mode == "human":
@@ -653,7 +745,7 @@ class CarParkingEnv(gym.Env):
         return observation, info
 
     def step(self, action: Array) -> tuple[Any, float, bool, bool, dict[str, Any]]:
-        if self.collision or self.success or self.elapsed_steps >= self.config.max_episode_steps:
+        if self.dead or self.success or self.elapsed_steps >= self.config.max_episode_steps:
             raise RuntimeError("step() called after episode end; call reset() first")
         action = np.asarray(action, dtype=self._dtype)
         if action.shape != (2,) or not np.all(np.isfinite(action)):
@@ -664,7 +756,10 @@ class CarParkingEnv(gym.Env):
         target_steering = float(action[0]) * self.config.max_steer_angle
         throttle = float(action[1])
         collided = False
+        step_impulse = 0.0
+        health_before = float(self.health)
         sub_dt = self.config.dt / self.config.physics_substeps
+
         for _ in range(self.config.physics_substeps):
             steer_delta = np.clip(
                 target_steering - self.steering,
@@ -679,9 +774,14 @@ class CarParkingEnv(gym.Env):
                 )
             )
             acceleration_limit = (
-                self.config.max_acceleration if throttle * self.speed >= 0.0 else self.config.max_braking
+                self.config.max_acceleration
+                if throttle * self.speed >= 0.0
+                else self.config.max_braking
             )
-            acceleration = acceleration_limit * throttle - self.config.rolling_drag * self.speed
+            acceleration = (
+                acceleration_limit * throttle
+                - self.config.rolling_drag * self.speed
+            )
             candidate_speed = float(
                 np.clip(
                     self.speed + acceleration * sub_dt,
@@ -689,11 +789,20 @@ class CarParkingEnv(gym.Env):
                     self.config.max_speed,
                 )
             )
-            yaw_rate = candidate_speed * np.tan(self.steering) / self.config.wheelbase
-            candidate_heading = float(_wrap_angle(self.heading + yaw_rate * sub_dt))
-            average_heading = self.heading + 0.5 * float(_wrap_angle(candidate_heading - self.heading))
+            yaw_rate = (
+                candidate_speed
+                * np.tan(self.steering)
+                / self.config.wheelbase
+            )
+            candidate_heading = float(
+                _wrap_angle(self.heading + yaw_rate * sub_dt)
+            )
+            average_heading = self.heading + 0.5 * float(
+                _wrap_angle(candidate_heading - self.heading)
+            )
             candidate_position = self.position + candidate_speed * sub_dt * np.array(
-                [np.cos(average_heading), np.sin(average_heading)], dtype=self._dtype
+                [np.cos(average_heading), np.sin(average_heading)],
+                dtype=self._dtype,
             )
             candidate_box = OrientedBox(
                 tuple(float(x) for x in candidate_position),
@@ -701,47 +810,142 @@ class CarParkingEnv(gym.Env):
                 self.config.car_width,
                 candidate_heading,
             )
-            if self._collides(candidate_box):
-                self.speed = 0.0
+
+            contacts = self._collision_contacts(candidate_box)
+            if contacts:
+                # The kinematic model has one signed longitudinal speed.  The
+                # SAT normal supplies the true normal component, while the
+                # glancing term intentionally makes side brushes costly too.
+                forward = np.array(
+                    [np.cos(candidate_heading), np.sin(candidate_heading)],
+                    dtype=np.float32,
+                )
+                velocity = candidate_speed * forward
+                normal_speed = max(
+                    max(0.0, -float(np.dot(velocity, normal)))
+                    for normal in contacts
+                )
+                effective_speed = max(
+                    normal_speed,
+                    self.config.glancing_impact_fraction
+                    * abs(candidate_speed),
+                    self.config.min_effective_impact_speed,
+                )
+                impulse = float(
+                    self.config.impact_impulse_scale
+                    * (1.0 + self.config.collision_restitution)
+                    * effective_speed
+                )
+                step_impulse += impulse
+                self.health = max(
+                    0.0,
+                    self.health - impulse / self.config.damage_capacity,
+                )
+
+                # Reject the penetrating pose and apply a small scalar rebound.
+                # This keeps the collision geometry exact and avoids tunnelling.
+                self.speed = float(
+                    np.clip(
+                        -candidate_speed * self.config.collision_restitution,
+                        -self.config.max_reverse_speed,
+                        self.config.max_speed,
+                    )
+                )
                 collided = True
                 break
+
             self.position = candidate_position.astype(self._dtype)
             self.heading = candidate_heading
             self.speed = candidate_speed
 
         self.elapsed_steps += 1
-        self.collision = bool(collided and self.config.terminate_on_collision)
-        if self.parked_pose:
+        self.collision = bool(collided)
+        self.step_impulse = float(step_impulse)
+        self.total_impulse += float(step_impulse)
+        self.health_loss = max(0.0, health_before - float(self.health))
+        self.dead = bool(
+            self.health <= 0.0
+            or (collided and self.config.terminate_on_collision)
+        )
+        self._update_display_health(self.config.dt)
+
+        if not self.dead and self.parked_pose:
             self.dwell_count += 1
         else:
             self.dwell_count = 0
-        self.success = self.dwell_count >= self.config.dwell_steps
+        self.success = bool(
+            not self.dead and self.dwell_count >= self.config.dwell_steps
+        )
 
-        terminated = bool(self.success or self.collision)
+        terminated = bool(self.success or self.dead)
         truncated = bool(
-            not terminated and self.elapsed_steps >= self.config.max_episode_steps
+            not terminated
+            and self.elapsed_steps >= self.config.max_episode_steps
         )
-        reason = (
-            "success" if self.success else "collision" if self.collision else "time_limit" if truncated else None
+        if self.success:
+            reason = "success"
+        elif self.dead and collided and self.config.terminate_on_collision:
+            reason = "collision"
+        elif self.dead:
+            reason = "health_depleted"
+        elif truncated:
+            reason = "time_limit"
+        else:
+            reason = None
+
+        containment_entry = bool(
+            self.fully_inside_slot and not self._containment_awarded
         )
-        reward = self._step_reward(action, previous_cost, collided)
+        if containment_entry:
+            self._containment_awarded = True
+        reward = self._step_reward(
+            action,
+            previous_cost,
+            collided=collided,
+            health_loss=self.health_loss,
+            containment_entry=containment_entry,
+        )
         observation = self._get_observation()
         info = self._get_info(termination_reason=reason)
         if self.render_mode == "human":
             self.render()
         return observation, reward, terminated, truncated, info
 
-    def _collides(self, vehicle: OrientedBox) -> bool:
-        corners = _box_corners(vehicle, margin=self.config.collision_margin)
-        if np.any(corners < self.config.arena_low) or np.any(corners > self.config.arena_high):
-            return True
+    def _collision_contacts(self, vehicle: OrientedBox) -> list[Array]:
+        """Return all inward-safe contact normals for a candidate vehicle pose."""
         expanded = OrientedBox(
             vehicle.center,
             vehicle.length + 2.0 * self.config.collision_margin,
             vehicle.width + 2.0 * self.config.collision_margin,
             vehicle.heading,
         )
-        return any(_boxes_overlap(expanded, obstacle) for obstacle in self.layout.obstacles)
+        corners = _box_corners(expanded)
+        contacts: list[Array] = []
+
+        if float(corners[:, 0].min()) < self.config.arena_low:
+            contacts.append(np.array([1.0, 0.0], dtype=np.float32))
+        if float(corners[:, 0].max()) > self.config.arena_high:
+            contacts.append(np.array([-1.0, 0.0], dtype=np.float32))
+        if float(corners[:, 1].min()) < self.config.arena_low:
+            contacts.append(np.array([0.0, 1.0], dtype=np.float32))
+        if float(corners[:, 1].max()) > self.config.arena_high:
+            contacts.append(np.array([0.0, -1.0], dtype=np.float32))
+
+        for obstacle in self.layout.obstacles:
+            contact = _box_contact_normal(expanded, obstacle)
+            if contact is not None:
+                normal, _ = contact
+                contacts.append(normal)
+        return contacts
+
+    def _collides(self, vehicle: OrientedBox) -> bool:
+        return bool(self._collision_contacts(vehicle))
+
+    def _update_display_health(self, dt: float) -> None:
+        alpha = 1.0 - float(np.exp(-dt / self.config.health_bar_tau))
+        self._display_health += alpha * (self.health - self._display_health)
+        if self.health <= 0.0 and self._display_health < 0.01:
+            self._display_health = 0.0
 
     def _pose_cost(self) -> float:
         return float(
@@ -749,15 +953,30 @@ class CarParkingEnv(gym.Env):
             + self.config.orientation_scale * abs(self.heading_error)
         )
 
-    def _step_reward(self, action: Array, previous_cost: float, collided: bool) -> float:
+    def _step_reward(
+        self,
+        action: Array,
+        previous_cost: float,
+        *,
+        collided: bool,
+        health_loss: float,
+        containment_entry: bool,
+    ) -> float:
         if self.success:
             return float(self.config.success_reward)
+        if self.dead:
+            return float(self.config.death_penalty)
+
+        reward = (
+            -self.config.step_penalty
+            - self.config.control_cost * float(np.dot(action, action))
+        )
         if collided:
-            return float(self.config.collision_penalty)
-        reward = -self.config.step_penalty - self.config.control_cost * float(np.dot(action, action))
+            reward += self.config.collision_penalty
+            reward -= self.config.damage_penalty_scale * float(health_loss)
         if self.config.reward_mode == "dense":
             reward += previous_cost - self._pose_cost()
-            if self.fully_inside_slot:
+            if containment_entry:
                 reward += self.config.containment_bonus
         return float(reward)
 
@@ -793,6 +1012,15 @@ class CarParkingEnv(gym.Env):
             "success": bool(self.success),
             "is_success": bool(self.success),
             "collision": bool(self.collision),
+            "collision_contact": bool(self.collision),
+            "dead": bool(self.dead),
+            "health": float(self.health),
+            "health_fraction": float(
+                self.health / self.config.initial_health
+            ),
+            "health_loss": float(self.health_loss),
+            "step_impulse": float(self.step_impulse),
+            "total_impulse": float(self.total_impulse),
             "parked_pose": bool(self.parked_pose),
             "fully_inside_slot": bool(self.fully_inside_slot),
             "dwell_count": int(self.dwell_count),
@@ -821,18 +1049,18 @@ class CarParkingEnv(gym.Env):
         self._human_image = None
 
     def _render_rgb(self) -> Array:
-        """Render a coherent two-lane parking lot without changing state.
+        """Render a compact parking scene with only a narrow tree backdrop.
 
-        The visual geometry is derived from the same oriented boxes used by
-        collision checking.  In particular, parked cars and the ego vehicle
-        share the same footprint, and the highlighted approach lane is the lane
-        adjacent to the requested parking row.
+        The camera is cropped to the active aisle, parking row, sidewalk, and
+        one tree line.  It deliberately omits the previous oversized lawn,
+        multi-meter HUD, maneuver badge, direction arrows, and decorative
+        start stencil.
         """
-        size = self.render_size
-        low, high = self.config.arena_low, self.config.arena_high
-        span = high - low
-        xs = np.linspace(low, high, size)
-        ys = np.linspace(high, low, size)
+        width = self.render_size
+        x_low, x_high, y_low, y_high, height = self._render_view()
+        span = x_high - x_low
+        xs = np.linspace(x_low, x_high, width)
+        ys = np.linspace(y_high, y_low, height)
         xx, yy = np.meshgrid(xs, ys)
 
         slot = self.layout.slot
@@ -845,294 +1073,179 @@ class CarParkingEnv(gym.Env):
             opposite_lane_center,
         ) = _parking_row_geometry(slot, self.config.aisle_width)
 
-        # --------------------------------------------------------------
-        # Asphalt base with deterministic aggregate and two wheel tracks.
-        # --------------------------------------------------------------
+        # Asphalt base.
         aggregate = (
-            3.0 * np.sin(83.0 * xx + 41.0 * yy)
-            + 1.9 * np.cos(137.0 * xx - 67.0 * yy)
-            + 1.2 * np.sin(211.0 * xx + 19.0 * yy)
+            2.4 * np.sin(83.0 * xx + 41.0 * yy)
+            + 1.5 * np.cos(137.0 * xx - 67.0 * yy)
+            + 0.9 * np.sin(211.0 * xx + 19.0 * yy)
         )
-        asphalt = np.clip(57.0 + aggregate, 45.0, 69.0)
-        frame = np.empty((size, size, 3), dtype=np.uint8)
-        frame[..., 0] = np.clip(asphalt * 0.94, 0, 255).astype(np.uint8)
+        asphalt = np.clip(58.0 + aggregate, 48.0, 68.0)
+        frame = np.empty((height, width, 3), dtype=np.uint8)
+        frame[..., 0] = np.clip(asphalt * 0.95, 0, 255).astype(np.uint8)
         frame[..., 1] = np.clip(asphalt, 0, 255).astype(np.uint8)
-        frame[..., 2] = np.clip(asphalt * 1.07, 0, 255).astype(np.uint8)
+        frame[..., 2] = np.clip(asphalt * 1.05, 0, 255).astype(np.uint8)
 
-        lane_half_width = 0.25 * self.config.aisle_width
         road_low = min(row_inner_y, road_edge)
         road_high = max(row_inner_y, road_edge)
         road_mask = (yy >= road_low) & (yy <= road_high)
-        approach_lane = road_mask & (
-            mirror * (yy - road_center) >= 0.0
-        )
-        opposite_lane = road_mask & ~approach_lane
-
-        # A very light tint makes the correct approach lane legible without
-        # looking like a navigation overlay.
+        approach_lane = road_mask & (mirror * (yy - road_center) >= 0.0)
         self._alpha_blend_mask(
             frame,
             approach_lane,
-            np.array([72, 85, 91], dtype=np.uint8),
-            0.10,
-        )
-        self._alpha_blend_mask(
-            frame,
-            opposite_lane,
-            np.array([36, 42, 48], dtype=np.uint8),
-            0.05,
+            np.array([77, 85, 89], dtype=np.uint8),
+            0.07,
         )
 
-        tire_offset = min(0.035, 0.32 * self.config.car_width)
+        # Subtle wheel tracks only; no large directional overlays.
+        tire_offset = min(0.034, 0.32 * self.config.car_width)
         rubber = np.zeros_like(xx, dtype=np.float64)
-        for lane_center, lane_strength in (
-            (approach_lane_center, 4.8),
-            (opposite_lane_center, 3.1),
+        for lane_center, strength in (
+            (approach_lane_center, 3.8),
+            (opposite_lane_center, 2.3),
         ):
             for offset in (-tire_offset, tire_offset):
-                rubber += lane_strength * np.exp(
+                rubber += strength * np.exp(
                     -((yy - (lane_center + offset)) / 0.030) ** 2
                 )
         rubber *= road_mask
-        frame[..., 0] = np.clip(
-            frame[..., 0].astype(np.float32) - rubber, 0, 255
+        for channel, multiplier in ((0, 1.0), (1, 1.0), (2, 0.72)):
+            frame[..., channel] = np.clip(
+                frame[..., channel].astype(np.float32)
+                - multiplier * rubber,
+                0,
+                255,
+            ).astype(np.uint8)
+
+        # The opposite side ends after a compact sidewalk and one tree row.
+        island_depth = -mirror * (yy - road_edge)
+        island = island_depth >= 0.0
+        sidewalk = island & (island_depth <= 0.105)
+        grass = island & (island_depth > 0.105)
+
+        tile_x = np.floor((xx - x_low) / 0.095).astype(np.int32)
+        tile_y = np.floor((yy - y_low) / 0.095).astype(np.int32)
+        tile = (tile_x + tile_y) % 2
+        paver = 154.0 + 6.0 * tile + 1.4 * np.sin(41.0 * xx - 23.0 * yy)
+        frame[..., 0][sidewalk] = np.clip(
+            paver[sidewalk] * 1.03, 0, 255
         ).astype(np.uint8)
-        frame[..., 1] = np.clip(
-            frame[..., 1].astype(np.float32) - rubber, 0, 255
-        ).astype(np.uint8)
-        frame[..., 2] = np.clip(
-            frame[..., 2].astype(np.float32) - 0.72 * rubber, 0, 255
+        frame[..., 1][sidewalk] = np.clip(paver[sidewalk], 0, 255).astype(
+            np.uint8
+        )
+        frame[..., 2][sidewalk] = np.clip(
+            paver[sidewalk] * 0.95, 0, 255
         ).astype(np.uint8)
 
-        # --------------------------------------------------------------
-        # Opposite-side island, curb, landscaping, and parking-row curb.
-        # --------------------------------------------------------------
+        grass_texture = (
+            80.0
+            + 4.0 * np.sin(25.0 * xx + 13.0 * yy)
+            + 2.5 * np.cos(39.0 * xx - 17.0 * yy)
+        )
+        frame[..., 0][grass] = np.clip(
+            0.48 * grass_texture[grass], 0, 255
+        ).astype(np.uint8)
+        frame[..., 1][grass] = np.clip(
+            1.14 * grass_texture[grass], 0, 255
+        ).astype(np.uint8)
+        frame[..., 2][grass] = np.clip(
+            0.58 * grass_texture[grass], 0, 255
+        ).astype(np.uint8)
+
+        curb_width_world = max(0.010, 2.0 * span / width)
+        island_curb = np.abs(yy - road_edge) <= curb_width_world
+        frame[island_curb] = np.array([211, 207, 193], dtype=np.uint8)
+
+        tree_y = road_edge - mirror * 0.205
+        for tree_x in np.linspace(-0.72, 0.72, 5):
+            shadow_center = np.array(
+                [tree_x + 0.018, tree_y - 0.018], dtype=np.float32
+            )
+            canopy_center = np.array([tree_x, tree_y], dtype=np.float32)
+            self._blend_disk_world(
+                frame,
+                shadow_center,
+                0.061,
+                np.array([3, 8, 6], dtype=np.uint8),
+                0.38,
+            )
+            self._draw_disk_world(
+                frame,
+                canopy_center,
+                0.054,
+                np.array([37, 105, 59], dtype=np.uint8),
+            )
+            self._blend_disk_world(
+                frame,
+                canopy_center + np.array([-0.016, 0.015], dtype=np.float32),
+                0.028,
+                np.array([98, 164, 91], dtype=np.uint8),
+                0.58,
+            )
+
+        # Parking-row curb: simple concrete, not decorative yellow/black tape.
         for obstacle in self.layout.obstacles:
+            if obstacle.kind != "curb":
+                continue
             mask = self._box_mask(xx, yy, obstacle)
-            if obstacle.kind == "island":
-                tile_x = np.floor((xx - low) / 0.105).astype(np.int32)
-                tile_y = np.floor((yy - low) / 0.105).astype(np.int32)
-                tile = (tile_x + tile_y) % 2
-                paver = 151 + 7 * tile + 2.0 * np.sin(47.0 * xx - 29.0 * yy)
-                frame[..., 0][mask] = np.clip(
-                    paver[mask] * 1.04, 0, 255
-                ).astype(np.uint8)
-                frame[..., 1][mask] = np.clip(paver[mask], 0, 255).astype(
-                    np.uint8
-                )
-                frame[..., 2][mask] = np.clip(
-                    paver[mask] * 0.94, 0, 255
-                ).astype(np.uint8)
+            frame[mask] = np.array([194, 193, 185], dtype=np.uint8)
+            curb_inner = obstacle.center[1] - mirror * obstacle.width / 2.0
+            curb_shadow = np.abs(yy - (curb_inner - mirror * 0.012)) <= 0.010
+            self._alpha_blend_mask(
+                frame,
+                curb_shadow,
+                np.array([5, 7, 10], dtype=np.uint8),
+                0.30,
+            )
 
-                near_edge = obstacle.center[1] + mirror * obstacle.width / 2.0
-                depth = -mirror * (yy - near_edge)
-                landscape = mask & (depth >= 0.22)
-                grass = (
-                    74.0
-                    + 5.0 * np.sin(23.0 * xx + 11.0 * yy)
-                    + 3.0 * np.cos(41.0 * xx - 17.0 * yy)
-                )
-                frame[..., 0][landscape] = np.clip(
-                    grass[landscape] * 0.48, 0, 255
-                ).astype(np.uint8)
-                frame[..., 1][landscape] = np.clip(
-                    grass[landscape] * 1.18, 0, 255
-                ).astype(np.uint8)
-                frame[..., 2][landscape] = np.clip(
-                    grass[landscape] * 0.58, 0, 255
-                ).astype(np.uint8)
-
-                planter_edge = mask & (np.abs(depth - 0.22) <= 0.018)
-                frame[planter_edge] = np.array([202, 195, 176], dtype=np.uint8)
-                shrub_y = near_edge - mirror * 0.42
-                for shrub_x in np.linspace(-0.80, 0.80, 6):
-                    shrub_shadow = (
-                        (xx - (shrub_x + 0.016)) ** 2
-                        + (yy - (shrub_y - 0.020)) ** 2
-                        <= 0.070**2
-                    )
-                    self._alpha_blend_mask(
-                        frame,
-                        shrub_shadow & landscape,
-                        np.array([4, 9, 7], dtype=np.uint8),
-                        0.34,
-                    )
-                    shrub = (
-                        (xx - shrub_x) ** 2 + (yy - shrub_y) ** 2 <= 0.059**2
-                    )
-                    frame[shrub & landscape] = np.array(
-                        [37, 105, 59], dtype=np.uint8
-                    )
-                    highlight = (
-                        (xx - (shrub_x - 0.015)) ** 2
-                        + (yy - (shrub_y + 0.014)) ** 2
-                        <= 0.031**2
-                    )
-                    self._alpha_blend_mask(
-                        frame,
-                        highlight & landscape,
-                        np.array([92, 164, 89], dtype=np.uint8),
-                        0.55,
-                    )
-
-                curb = mask & (np.abs(yy - near_edge) <= 0.024)
-                frame[curb] = np.array([213, 208, 190], dtype=np.uint8)
-                curb_shadow = np.abs(
-                    yy - (near_edge + mirror * 0.028)
-                ) <= 0.012
-                self._alpha_blend_mask(
-                    frame,
-                    curb_shadow,
-                    np.array([4, 7, 10], dtype=np.uint8),
-                    0.34,
-                )
-            elif obstacle.kind == "curb":
-                local_x = xx - obstacle.center[0]
-                segments = (
-                    np.floor((local_x + 1.0) / 0.12).astype(np.int32) % 2
-                )
-                frame[mask & (segments == 0)] = np.array(
-                    [231, 193, 63], dtype=np.uint8
-                )
-                frame[mask & (segments == 1)] = np.array(
-                    [38, 41, 45], dtype=np.uint8
-                )
-
-        # --------------------------------------------------------------
-        # Lane boundaries, center dashes, and directional markings.
-        # --------------------------------------------------------------
-        edge_width = max(0.005, 1.25 * span / size)
-        row_edge_line = np.abs(yy - row_inner_y) <= edge_width
-        island_edge_line = np.abs(yy - road_edge) <= edge_width
+        # Restrained lane lines.
+        edge_width = max(0.0045, 1.2 * span / width)
         self._alpha_blend_mask(
             frame,
-            row_edge_line | island_edge_line,
-            np.array([228, 230, 220], dtype=np.uint8),
-            0.90,
+            (np.abs(yy - row_inner_y) <= edge_width)
+            | (np.abs(yy - road_edge) <= edge_width),
+            np.array([225, 227, 218], dtype=np.uint8),
+            0.88,
         )
-
-        dash = np.mod(xx - low, 0.27) < 0.14
+        dash = np.mod(xx - x_low, 0.27) < 0.135
         center_line = (
-            np.abs(yy - road_center) <= max(0.005, 1.3 * span / size)
+            np.abs(yy - road_center) <= max(0.0045, 1.15 * span / width)
         ) & dash
         self._alpha_blend_mask(
             frame,
             center_line,
-            np.array([228, 186, 64], dtype=np.uint8),
-            0.90,
+            np.array([224, 184, 66], dtype=np.uint8),
+            0.86,
         )
 
-        travel_direction = np.array(
-            [np.cos(self.layout.start_heading), np.sin(self.layout.start_heading)],
-            dtype=np.float64,
-        )
-        arrow_color = np.array([185, 193, 194], dtype=np.uint8)
-        for x_position in (-0.48, 0.38):
-            start = np.array([x_position, approach_lane_center]) - 0.055 * travel_direction
-            end = np.array([x_position, approach_lane_center]) + 0.055 * travel_direction
-            self._draw_world_arrow(
-                frame,
-                start,
-                end,
-                arrow_color,
-                max(1, size // 280),
-            )
-
-            reverse_direction = -travel_direction
-            start = np.array([x_position, opposite_lane_center]) - 0.050 * reverse_direction
-            end = np.array([x_position, opposite_lane_center]) + 0.050 * reverse_direction
-            self._draw_world_arrow(
-                frame,
-                start,
-                end,
-                np.array([145, 151, 154], dtype=np.uint8),
-                max(1, size // 300),
-            )
-
-        # A subtle blue start stencil remains visible after the car moves.
-        start_box = OrientedBox(
-            self.layout.start,
-            self.config.car_length * 1.04,
-            self.config.car_width * 1.08,
-            self.layout.start_heading,
-            "start",
-        )
-        start_mask = self._box_mask(xx, yy, start_box)
-        self._alpha_blend_mask(
-            frame,
-            start_mask,
-            np.array([49, 147, 231], dtype=np.uint8),
-            0.055,
-        )
-        self._draw_oriented_outline(
-            frame,
-            start_box,
-            np.array([72, 156, 222], dtype=np.uint8),
-            max(1, size // 360),
-        )
-
-        # --------------------------------------------------------------
-        # All bays use the target bay dimensions.  Parked cars remain exact
-        # ego-car size, so visual and collision geometry agree.
-        # --------------------------------------------------------------
-        bay_outline = np.array([178, 184, 180], dtype=np.uint8)
-        bay_boxes: list[OrientedBox] = [slot]
+        # Neighboring bay outlines use the target bay dimensions.
+        bay_outline = np.array([182, 186, 181], dtype=np.uint8)
         for obstacle in self.layout.obstacles:
             if obstacle.kind != "vehicle":
                 continue
-            bay_boxes.append(
-                OrientedBox(
-                    obstacle.center,
-                    slot.length,
-                    slot.width,
-                    obstacle.heading,
-                    "bay",
-                )
+            bay = OrientedBox(
+                obstacle.center,
+                slot.length,
+                slot.width,
+                obstacle.heading,
+                "bay",
             )
-
-        for bay in bay_boxes[1:]:
             self._draw_oriented_outline(
-                frame, bay, bay_outline, max(1, size // 300)
+                frame, bay, bay_outline, max(1, width // 320)
             )
-            if self.layout.maneuver != "parallel":
-                self._draw_parking_stop(
-                    frame,
-                    bay,
-                    mirror,
-                    np.array([224, 198, 92], dtype=np.uint8),
-                )
 
+        # Target bay and target-pose ghost.
         slot_mask = self._box_mask(xx, yy, slot)
         guide_color = np.array(
-            [62, 232, 139] if self.success else [51, 219, 189],
+            [61, 226, 133] if self.success else [48, 205, 180],
             dtype=np.uint8,
         )
-        pulse = 0.105 + 0.020 * np.sin(0.20 * self.elapsed_steps)
-        self._alpha_blend_mask(frame, slot_mask, guide_color, pulse)
+        self._alpha_blend_mask(frame, slot_mask, guide_color, 0.10)
         self._draw_oriented_outline(
             frame,
             slot,
-            np.array([236, 241, 230], dtype=np.uint8),
-            max(2, size // 225),
+            np.array([237, 240, 229], dtype=np.uint8),
+            max(2, width // 230),
         )
-        inset = OrientedBox(
-            slot.center,
-            slot.length - 0.020,
-            slot.width - 0.020,
-            slot.heading,
-            "slot_inset",
-        )
-        self._draw_oriented_outline(
-            frame, inset, guide_color, max(1, size // 320)
-        )
-        if self.layout.maneuver != "parallel":
-            self._draw_parking_stop(
-                frame,
-                slot,
-                mirror,
-                np.array([247, 218, 103], dtype=np.uint8),
-            )
-
         target_vehicle = OrientedBox(
             slot.center,
             self.config.car_length,
@@ -1141,20 +1254,14 @@ class CarParkingEnv(gym.Env):
             "target_vehicle",
         )
         self._draw_target_vehicle(
-            frame,
-            xx,
-            yy,
-            target_vehicle,
-            guide_color,
+            frame, xx, yy, target_vehicle, guide_color
         )
 
-        # --------------------------------------------------------------
-        # Parked cars and ego car.
-        # --------------------------------------------------------------
+        # Parked cars and ego car share the same physical dimensions.
         parked_colors = (
-            np.array([202, 70, 64], dtype=np.uint8),
-            np.array([221, 158, 48], dtype=np.uint8),
-            np.array([108, 116, 132], dtype=np.uint8),
+            np.array([197, 66, 61], dtype=np.uint8),
+            np.array([217, 151, 47], dtype=np.uint8),
+            np.array([107, 115, 128], dtype=np.uint8),
         )
         vehicle_index = 0
         for obstacle in self.layout.obstacles:
@@ -1170,140 +1277,75 @@ class CarParkingEnv(gym.Env):
             )
             vehicle_index += 1
 
-        ego_color = np.array(
-            [52, 219, 126]
-            if self.success
-            else [230, 63, 55]
-            if self.collision
-            else [35, 133, 233],
-            dtype=np.uint8,
-        )
+        if self.dead:
+            ego_color = np.array([92, 94, 98], dtype=np.uint8)
+        elif self.collision:
+            ego_color = np.array([231, 72, 48], dtype=np.uint8)
+        elif self.success:
+            ego_color = np.array([49, 210, 119], dtype=np.uint8)
+        else:
+            ego_color = np.array([35, 133, 233], dtype=np.uint8)
         self._draw_vehicle(
             frame, xx, yy, self.vehicle_box, ego_color, player=True
         )
 
-        # --------------------------------------------------------------
-        # Compact HUD: position, alignment, stop, and dwell quality.
-        # --------------------------------------------------------------
-        panel_margin = max(8, size // 42)
-        panel_width = max(150, size // 3)
-        panel_height = max(70, size // 6)
-        panel_y = (
-            panel_margin
-            if mirror < 0.0
-            else size - panel_margin - panel_height
-        )
-        self._blend_rect(
-            frame,
-            panel_margin,
-            panel_y,
-            panel_margin + panel_width,
-            panel_y + panel_height,
-            np.array([8, 14, 20], dtype=np.uint8),
-            0.84,
-        )
-        meter_x0 = panel_margin + max(25, size // 20)
-        meter_x1 = panel_margin + panel_width - max(10, size // 68)
-        meter_h = max(5, size // 92)
-        alignment_window = max(self.config.orientation_tolerance * 5.0, 0.45)
-        values = (
-            1.0 - np.clip(self.distance_to_goal / 0.72, 0.0, 1.0),
-            1.0 - np.clip(abs(self.heading_error) / alignment_window, 0.0, 1.0),
-            1.0 - np.clip(
-                abs(self.speed)
-                / max(self.config.max_speed, self.config.max_reverse_speed),
+        # Health bar only.  No panel, P badge, maneuver pips, or extra meters.
+        health_fraction = float(
+            np.clip(
+                self._display_health / self.config.initial_health,
                 0.0,
                 1.0,
-            ),
-            np.clip(self.dwell_count / self.config.dwell_steps, 0.0, 1.0),
+            )
         )
-        colors = (
-            np.array([52, 163, 235], dtype=np.uint8),
-            np.array([238, 188, 66], dtype=np.uint8),
-            np.array([188, 111, 226], dtype=np.uint8),
-            np.array([55, 222, 126], dtype=np.uint8),
-        )
-        row_gap = max(5, size // 100)
-        for row, (value, color) in enumerate(zip(values, colors)):
-            y0 = panel_y + max(9, size // 74) + row * (meter_h + row_gap)
-            frame[y0 : y0 + meter_h, meter_x0:meter_x1] = np.array(
-                [42, 48, 55], dtype=np.uint8
-            )
-            fill_x = meter_x0 + int(
-                (meter_x1 - meter_x0) * float(value)
-            )
-            frame[y0 : y0 + meter_h, meter_x0:fill_x] = color
-            self._draw_pixel_disk(
-                frame,
-                (panel_margin + max(13, size // 48), y0 + meter_h // 2),
-                max(2, size // 150),
-                color,
-            )
+        margin = max(8, width // 55)
+        bar_width = max(92, width // 4)
+        bar_height = max(9, width // 45)
+        bar_y = margin if mirror < 0.0 else height - margin - bar_height
+        bar_x = margin
+        frame[
+            bar_y : bar_y + bar_height,
+            bar_x : bar_x + bar_width,
+        ] = np.array([25, 29, 33], dtype=np.uint8)
+        inner = max(2, width // 260)
+        fill_width = int((bar_width - 2 * inner) * health_fraction)
+        if fill_width > 0:
+            healthy = np.array([54, 196, 98], dtype=np.float32)
+            damaged = np.array([230, 52, 48], dtype=np.float32)
+            health_color = (
+                health_fraction * healthy
+                + (1.0 - health_fraction) * damaged
+            ).astype(np.uint8)
+            frame[
+                bar_y + inner : bar_y + bar_height - inner,
+                bar_x + inner : bar_x + inner + fill_width,
+            ] = health_color
 
-        # Parking badge and maneuver pips.
-        badge_x = size - panel_margin - max(24, size // 20)
-        badge_y = panel_y + max(10, size // 60)
-        badge_w = max(3, size // 130)
-        badge_color = np.array([84, 221, 246], dtype=np.uint8)
-        self._draw_line(
-            frame,
-            (badge_x, badge_y),
-            (badge_x, badge_y + 28),
-            badge_color,
-            badge_w,
-        )
-        self._draw_line(
-            frame,
-            (badge_x, badge_y),
-            (badge_x + 14, badge_y),
-            badge_color,
-            badge_w,
-        )
-        self._draw_line(
-            frame,
-            (badge_x + 14, badge_y),
-            (badge_x + 14, badge_y + 13),
-            badge_color,
-            badge_w,
-        )
-        self._draw_line(
-            frame,
-            (badge_x, badge_y + 13),
-            (badge_x + 14, badge_y + 13),
-            badge_color,
-            badge_w,
-        )
-        mode_index = MANEUVERS.index(self.layout.maneuver)
-        for index in range(len(MANEUVERS)):
-            color = (
-                badge_color
-                if index == mode_index
-                else np.array([57, 67, 76], dtype=np.uint8)
-            )
-            self._draw_pixel_disk(
-                frame,
-                (
-                    badge_x - 2 + index * max(8, size // 60),
-                    badge_y + 40,
-                ),
-                max(2, size // 170),
-                color,
-            )
-
-        border = max(3, size // 150)
-        frame[:border] = np.array([14, 18, 23], dtype=np.uint8)
-        frame[-border:] = np.array([14, 18, 23], dtype=np.uint8)
-        frame[:, :border] = np.array([14, 18, 23], dtype=np.uint8)
-        frame[:, -border:] = np.array([14, 18, 23], dtype=np.uint8)
-        accent = max(10, size // 17)
-        frame[:border, :accent] = np.array([39, 151, 225], dtype=np.uint8)
-        frame[:border, accent : 2 * accent] = np.array(
-            [233, 190, 64], dtype=np.uint8
-        )
-        frame[-border:, -accent:] = np.array(
-            [53, 220, 128], dtype=np.uint8
-        )
+        border = max(2, width // 220)
+        frame[:border] = np.array([17, 20, 24], dtype=np.uint8)
+        frame[-border:] = np.array([17, 20, 24], dtype=np.uint8)
+        frame[:, :border] = np.array([17, 20, 24], dtype=np.uint8)
+        frame[:, -border:] = np.array([17, 20, 24], dtype=np.uint8)
         return frame
+
+    def _render_view(self) -> tuple[float, float, float, float, int]:
+        """Return a fixed-aspect crop ending just beyond the tree line."""
+        mirror, _, road_edge, _, _, _ = _parking_row_geometry(
+            self.layout.slot, self.config.aisle_width
+        )
+        tree_y = road_edge - mirror * 0.205
+        far_tree_edge = tree_y - mirror * 0.095
+        parking_outer_edge = mirror * 1.0
+
+        x_low, x_high = -0.92, 0.92
+        world_height = 1.22
+        center_y = 0.5 * (far_tree_edge + parking_outer_edge)
+        y_low = center_y - 0.5 * world_height
+        y_high = center_y + 0.5 * world_height
+        height = max(
+            1,
+            int(round(self.render_size * world_height / (x_high - x_low))),
+        )
+        return x_low, x_high, y_low, y_high, height
 
     @staticmethod
     def _box_mask(xx: Array, yy: Array, box: OrientedBox) -> Array:
@@ -1368,33 +1410,6 @@ class CarParkingEnv(gym.Env):
                 color,
                 thickness,
             )
-
-    def _draw_parking_stop(
-        self,
-        frame: Array,
-        bay: OrientedBox,
-        mirror: float,
-        color: Array,
-    ) -> None:
-        """Draw a wheel stop at the curb-side longitudinal end of a bay."""
-        forward = np.array(
-            [np.cos(bay.heading), np.sin(bay.heading)], dtype=np.float64
-        )
-        lateral = np.array([-forward[1], forward[0]], dtype=np.float64)
-        row_normal = np.array([0.0, mirror], dtype=np.float64)
-        end_sign = 1.0 if float(np.dot(forward, row_normal)) >= 0.0 else -1.0
-        center = (
-            np.asarray(bay.center, dtype=np.float64)
-            + end_sign * max(0.02, bay.length / 2.0 - 0.032) * forward
-        )
-        half_width = 0.34 * bay.width
-        self._draw_line(
-            frame,
-            self._world_to_pixel(center - half_width * lateral),
-            self._world_to_pixel(center + half_width * lateral),
-            color,
-            max(2, self.render_size // 240),
-        )
 
     def _draw_target_vehicle(
         self,
@@ -1572,20 +1587,6 @@ class CarParkingEnv(gym.Env):
             )
 
     @staticmethod
-    def _blend_rect(
-        frame: Array,
-        x0: int,
-        y0: int,
-        x1: int,
-        y1: int,
-        color: Array,
-        alpha: float,
-    ) -> None:
-        region = frame[max(0, y0) : min(frame.shape[0], y1), max(0, x0) : min(frame.shape[1], x1)]
-        blended = (1.0 - alpha) * region.astype(np.float32) + alpha * color.astype(np.float32)
-        region[:] = np.clip(blended, 0, 255).astype(np.uint8)
-
-    @staticmethod
     def _draw_pixel_disk(
         frame: Array, center: tuple[int, int], radius: int, color: Array
     ) -> None:
@@ -1597,15 +1598,58 @@ class CarParkingEnv(gym.Env):
         mask = (xx - center[0]) ** 2 + (yy - center[1]) ** 2 <= radius**2
         frame[y0:y1, x0:x1][mask] = color
 
+    def _draw_disk_world(
+        self,
+        frame: Array,
+        center: Array,
+        radius: float,
+        color: Array,
+    ) -> None:
+        x_low, x_high, y_low, y_high, _ = self._render_view()
+        pixels_per_world = frame.shape[1] / max(x_high - x_low, 1e-8)
+        pixel_radius = max(1, int(round(radius * pixels_per_world)))
+        self._draw_pixel_disk(
+            frame, self._world_to_pixel(center), pixel_radius, color
+        )
+
+    def _blend_disk_world(
+        self,
+        frame: Array,
+        center: Array,
+        radius: float,
+        color: Array,
+        alpha: float,
+    ) -> None:
+        cx, cy = self._world_to_pixel(center)
+        x_low, x_high, _, _, _ = self._render_view()
+        pixels_per_world = frame.shape[1] / max(x_high - x_low, 1e-8)
+        pixel_radius = max(1, int(round(radius * pixels_per_world)))
+        x0 = max(0, cx - pixel_radius)
+        x1 = min(frame.shape[1], cx + pixel_radius + 1)
+        y0 = max(0, cy - pixel_radius)
+        y1 = min(frame.shape[0], cy + pixel_radius + 1)
+        yy, xx = np.ogrid[y0:y1, x0:x1]
+        mask = (xx - cx) ** 2 + (yy - cy) ** 2 <= pixel_radius**2
+        region = frame[y0:y1, x0:x1]
+        blended = (
+            (1.0 - alpha) * region[mask].astype(np.float32)
+            + alpha * color.astype(np.float32)
+        )
+        region[mask] = np.clip(blended, 0, 255).astype(np.uint8)
+
     def _render_human(self, frame: Array) -> None:
         try:
             import matplotlib.pyplot as plt
         except ImportError as exc:
             raise ImportError("human rendering requires matplotlib") from exc
         if self._human_figure is None:
-            self._human_figure, axis = plt.subplots(figsize=(6, 6))
+            aspect = frame.shape[1] / max(frame.shape[0], 1)
+            self._human_figure, axis = plt.subplots(
+                figsize=(7.0, 7.0 / aspect)
+            )
             axis.axis("off")
             self._human_image = axis.imshow(frame)
+            self._human_figure.tight_layout(pad=0)
             plt.show(block=False)
         else:
             self._human_image.set_data(frame)
@@ -1613,36 +1657,26 @@ class CarParkingEnv(gym.Env):
         self._human_figure.canvas.flush_events()
 
     def _world_to_pixel(self, point: Array) -> tuple[int, int]:
-        scale = (self.render_size - 1) / (
-            self.config.arena_high - self.config.arena_low
-        )
-        x = int(round((float(point[0]) - self.config.arena_low) * scale))
-        y = int(round((self.config.arena_high - float(point[1])) * scale))
-        return (
-            int(np.clip(x, 0, self.render_size - 1)),
-            int(np.clip(y, 0, self.render_size - 1)),
-        )
-
-    def _draw_polygon(self, frame: Array, polygon: Array, color: tuple[int, int, int]) -> None:
-        pixels = np.array([self._world_to_pixel(point) for point in polygon], dtype=np.float64)
-        x0 = max(0, int(np.floor(pixels[:, 0].min())))
-        x1 = min(self.render_size - 1, int(np.ceil(pixels[:, 0].max())))
-        y0 = max(0, int(np.floor(pixels[:, 1].min())))
-        y1 = min(self.render_size - 1, int(np.ceil(pixels[:, 1].max())))
-        if x0 > x1 or y0 > y1:
-            return
-        yy, xx = np.mgrid[y0 : y1 + 1, x0 : x1 + 1]
-        inside = np.zeros(xx.shape, dtype=bool)
-        j = len(pixels) - 1
-        for i in range(len(pixels)):
-            xi, yi = pixels[i]
-            xj, yj = pixels[j]
-            crosses = ((yi > yy) != (yj > yy)) & (
-                xx < (xj - xi) * (yy - yi) / (yj - yi + 1e-12) + xi
+        x_low, x_high, y_low, y_high, height = self._render_view()
+        width = self.render_size
+        x = int(
+            round(
+                (float(point[0]) - x_low)
+                / max(x_high - x_low, 1e-8)
+                * (width - 1)
             )
-            inside ^= crosses
-            j = i
-        frame[y0 : y1 + 1, x0 : x1 + 1][inside] = color
+        )
+        y = int(
+            round(
+                (y_high - float(point[1]))
+                / max(y_high - y_low, 1e-8)
+                * (height - 1)
+            )
+        )
+        return (
+            int(np.clip(x, 0, width - 1)),
+            int(np.clip(y, 0, height - 1)),
+        )
 
     @staticmethod
     def _draw_line(

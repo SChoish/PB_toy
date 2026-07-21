@@ -56,7 +56,7 @@ env = gym.make("CarParkingParallel-v0", observation_mode="goal_dict")
 
 ```text
 [x, y, cos(yaw), sin(yaw), speed, normalized_steering,
- distance_to_slot, normalized_yaw_error, inside_slot, collision]
+ distance_to_slot, normalized_yaw_error, inside_slot, health]
 ```
 
 목표는 `[goal_x, goal_y, cos(goal_yaw), sin(goal_yaw)]`입니다.
@@ -71,7 +71,16 @@ env = gym.make("CarParkingParallel-v0", observation_mode="goal_dict")
 
 고정 평가 시작은 `env.reset(options={"task_id": 1})`처럼 선택합니다.
 `info["goal"]`, `info["is_success"]`, `info["collision"]`,
-`info["fully_inside_slot"]`, `info["dwell_count"]`를 제공합니다.
+`info["dead"]`, `info["health"]`, `info["health_loss"]`,
+`info["step_impulse"]`, `info["fully_inside_slot"]`,
+`info["dwell_count"]`를 제공합니다.
+
+충돌은 기본적으로 즉시 episode를 끝내지 않고 impact impulse에 비례해 health를
+깎습니다. 기본 damage capacity는 의도적으로 작아 저속 접촉도 큰 손상을 주며,
+health가 0이 되면 `health_depleted`로 종료됩니다. 즉시 충돌 종료는
+`CarParkingConfig(terminate_on_collision=True)` ablation에서만 사용합니다.
+`info["collision"]`은 해당 step의 접촉이고, `info["dead"]`만 누적 손상에 의한
+absorbing failure를 뜻합니다.
 
 주행 통로 폭은 기본 `0.48`이며 `CarParkingConfig(aisle_width=...)`로
 조절할 수 있습니다. 맞은편 보도 경계는 장식이 아니라 실제 충돌 영역입니다.

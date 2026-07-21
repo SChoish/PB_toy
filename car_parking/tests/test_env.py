@@ -71,7 +71,8 @@ class CarParkingApiTest(unittest.TestCase):
         env = CarParkingEnv(render_mode="rgb_array", render_size=128)
         env.reset(options={"task_id": 1})
         frame = env.render()
-        self.assertEqual(frame.shape, (128, 128, 3))
+        self.assertEqual(frame.shape, (env._render_view()[4], 128, 3))
+        self.assertLess(frame.shape[0], frame.shape[1])
         self.assertEqual(frame.dtype, np.uint8)
         self.assertGreater(len(np.unique(frame.reshape(-1, 3), axis=0)), 4)
         env.close()
@@ -132,9 +133,28 @@ class CarParkingDynamicsTest(unittest.TestCase):
         self.assertLess(env.heading, heading_before)
         env.close()
 
-    def test_collision_terminates_episode(self):
-        env = CarParkingEnv(CarParkingConfig(maneuver="parallel"))
+    def test_collision_causes_damage_and_repeated_impact_depletes_health(self):
+        env = CarParkingEnv(
+            CarParkingConfig(maneuver="parallel"),
+            observation_mode="state",
+        )
         env.reset(options={"variant": 1})
+        env.position = np.array([-0.80, -0.88], dtype=np.float32)
+        env.heading = -np.pi / 2.0
+        env.speed = 0.2
+        observation, reward, terminated, truncated, info = env.step(
+            np.zeros(2, dtype=np.float32)
+        )
+        self.assertFalse(terminated)
+        self.assertFalse(truncated)
+        self.assertTrue(info["collision"])
+        self.assertFalse(info["dead"])
+        self.assertLess(info["health"], env.config.initial_health)
+        self.assertGreater(info["health_loss"], 0.0)
+        self.assertGreater(info["step_impulse"], 0.0)
+        self.assertAlmostEqual(observation[-1], info["health"])
+        self.assertLess(reward, 0.0)
+
         env.position = np.array([-0.80, -0.88], dtype=np.float32)
         env.heading = -np.pi / 2.0
         env.speed = 0.2
@@ -144,13 +164,77 @@ class CarParkingDynamicsTest(unittest.TestCase):
         self.assertTrue(terminated)
         self.assertFalse(truncated)
         self.assertTrue(info["collision"])
-        self.assertEqual(reward, env.config.collision_penalty)
+        self.assertTrue(info["dead"])
+        self.assertEqual(info["health"], 0.0)
+        self.assertEqual(info["termination_reason"], "health_depleted")
+        self.assertEqual(reward, env.config.death_penalty)
         with self.assertRaisesRegex(RuntimeError, "after episode end"):
             env.step(np.zeros(2, dtype=np.float32))
         env.close()
 
+    def test_immediate_collision_termination_is_an_ablation(self):
+        config = CarParkingConfig(
+            maneuver="parallel",
+            terminate_on_collision=True,
+        )
+        env = CarParkingEnv(config)
+        env.reset(options={"variant": 1})
+        env.position = np.array([-0.80, -0.88], dtype=np.float32)
+        env.heading = -np.pi / 2.0
+        env.speed = 0.05
+        _, reward, terminated, truncated, info = env.step(
+            np.zeros(2, dtype=np.float32)
+        )
+        self.assertTrue(terminated)
+        self.assertFalse(truncated)
+        self.assertTrue(info["collision"])
+        self.assertTrue(info["dead"])
+        self.assertGreater(info["health"], 0.0)
+        self.assertEqual(info["termination_reason"], "collision")
+        self.assertEqual(reward, config.death_penalty)
+        env.close()
+
+    def test_reset_restores_or_accepts_valid_health(self):
+        env = CarParkingEnv(
+            CarParkingConfig(maneuver="parallel"),
+            observation_mode="state",
+        )
+        observation, info = env.reset(
+            options={"variant": 1, "health": 0.4}
+        )
+        self.assertAlmostEqual(observation[-1], 0.4)
+        self.assertAlmostEqual(info["health"], 0.4)
+        observation, info = env.reset(options={"variant": 1})
+        self.assertAlmostEqual(
+            observation[-1], env.config.initial_health
+        )
+        self.assertAlmostEqual(
+            info["health"], env.config.initial_health
+        )
+        with self.assertRaisesRegex(ValueError, "health"):
+            env.reset(options={"variant": 1, "health": 0.0})
+        env.close()
+
 
 class CarParkingSuccessTest(unittest.TestCase):
+    def test_containment_bonus_is_awarded_only_once(self):
+        config = CarParkingConfig(maneuver="parallel", dwell_steps=4)
+        env = CarParkingEnv(config)
+        env.reset(options={"variant": 1})
+        env.position = np.asarray(env.layout.slot.center, dtype=np.float32)
+        env.heading = env.layout.slot.heading
+        _, first_reward, _, _, _ = env.step(
+            np.zeros(2, dtype=np.float32)
+        )
+        _, second_reward, _, _, _ = env.step(
+            np.zeros(2, dtype=np.float32)
+        )
+        self.assertAlmostEqual(
+            first_reward - second_reward,
+            config.containment_bonus,
+        )
+        env.close()
+
     def test_pose_requires_full_containment_orientation_and_low_speed(self):
         env = CarParkingEnv(CarParkingConfig(maneuver="parallel"))
         env.reset(options={"variant": 1})

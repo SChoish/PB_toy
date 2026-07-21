@@ -56,7 +56,8 @@ def validate(
                 env.close()
                 continue
             counts["success" if result.success else "failure"] += 1
-            counts["collision"] += int(result.collision)
+            counts["contact"] += int(result.collision)
+            counts["death"] += int(result.dead)
             counts["timeout"] += int(result.timeout)
             counts["steps"] += result.steps
             env.close()
@@ -65,7 +66,8 @@ def validate(
         print(
             f"task {task_id}: success={counts['success']}/{total} "
             f"({counts['success'] / total:.1%}), "
-            f"collision={counts['collision'] / total:.1%}, "
+            f"contact={counts['contact'] / total:.1%}, "
+            f"death={counts['death'] / total:.1%}, "
             f"timeout={counts['timeout'] / total:.1%}, "
             f"planning_failure={counts['planning_failure'] / total:.1%}"
         )
@@ -75,7 +77,8 @@ def validate(
     print(
         f"overall: success={aggregate['success']}/{total} "
         f"({aggregate['success'] / total:.1%}), "
-        f"collision={aggregate['collision'] / total:.1%}, "
+        f"contact={aggregate['contact'] / total:.1%}, "
+        f"death={aggregate['death'] / total:.1%}, "
         f"timeout={aggregate['timeout'] / total:.1%}, "
         f"mean_steps={aggregate['steps'] / max(aggregate['success'] + aggregate['failure'], 1):.1f}"
     )
@@ -101,4 +104,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-

@@ -10,8 +10,13 @@ class ParkingExpertSmokeTest(unittest.TestCase):
                 env = CarParkingEnv()
                 result = rollout_expert(env, task_id=task_id, seed=0)
                 self.assertTrue(result.success)
+                self.assertFalse(result.dead)
                 self.assertFalse(result.collision)
                 self.assertFalse(result.timeout)
+                self.assertAlmostEqual(
+                    result.minimum_health, env.config.initial_health
+                )
+                self.assertAlmostEqual(result.total_health_loss, 0.0)
                 self.assertEqual(result.steps, env.elapsed_steps)
                 self.assertGreater(len(result.actions), env.config.dwell_steps)
                 env.close()
@@ -19,4 +24,3 @@ class ParkingExpertSmokeTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
-

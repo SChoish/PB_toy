@@ -54,6 +54,7 @@ dev = [
 ]
 
 [project.scripts]
+car-parking-generate = "car_parking.generate_dataset:main"
 car-race-generate = "car_race.generate_dataset:main"
 car-race-train = "car_race.train:main"
 pb-concept = "concept.codes:main"
