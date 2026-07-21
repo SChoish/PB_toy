@@ -21,6 +21,13 @@ K="${SUBGOAL_STEPS:-10}"
 HA="${ACTION_CHUNK_HORIZON:-2}"
 SIZE=10k
 SEED=0
+# Distance-weight power for PB/TR-HIQL, and TRL lam (same role). Current code defaults to 0.
+# Set this explicitly when running a different code/config so log names remain honest.
+WEIGHT_LABEL="${WEIGHT_LABEL:-w0}"
+if [[ "$WEIGHT_LABEL" != "w0" && "$WEIGHT_LABEL" != "w1" ]]; then
+  echo "WEIGHT_LABEL must be w0 or w1, got: $WEIGHT_LABEL" >&2
+  exit 2
+fi
 
 export AGENTS="${AGENTS:-hiql tr_hiql pbg pbf trl}"
 export CAR_ENVS="${CAR_ENVS:-car_race_ice car_race_grav car_race_anti_grav}"
@@ -33,11 +40,11 @@ export SIZE SEED STEPS EVAL_EVERY LOG_EVERY
 
 LOG_DIR="nohup_logs/train_10k_k10"
 mkdir -p "$LOG_DIR" checkpoints/car_race checkpoints/swingby
-MASTER="$LOG_DIR/master_$(date +%Y%m%d_%H%M%S).log"
+MASTER="$LOG_DIR/master_${WEIGHT_LABEL}_$(date +%Y%m%d_%H%M%S).log"
 exec > >(tee -a "$MASTER") 2>&1
 
 mapfile -t JOBS < <(bash scripts/plan_matrix.sh | grep -v '^#')
-echo "jobs=${#JOBS[@]} pack=$PACK size=$SIZE steps=$STEPS K=$K h_a=$HA"
+echo "jobs=${#JOBS[@]} pack=$PACK size=$SIZE steps=$STEPS K=$K h_a=$HA weight=$WEIGHT_LABEL"
 
 wait_for_slot() {
   while [[ "$(jobs -pr | wc -l)" -ge "$PACK" ]]; do
@@ -53,7 +60,17 @@ for line in "${JOBS[@]}"; do
   fi
   ckpt="${ckpt}_${SIZE}"
   tag="$(basename "$ckpt")"
-  log="$LOG_DIR/${tag}.log"
+  # hiql has no distance-weight/lam; leave its log name untagged.
+  case "$agent" in
+    tr_hiql|pbg|pbf|trl)
+      log_weight="$WEIGHT_LABEL"
+      log="$LOG_DIR/${tag}_${log_weight}.log"
+      ;;
+    *)
+      log_weight=""
+      log="$LOG_DIR/${tag}.log"
+      ;;
+  esac
 
   if [[ "$kind" == "car_race" ]]; then
     if [[ "$task" == "navigation" ]]; then
@@ -75,7 +92,11 @@ for line in "${JOBS[@]}"; do
   fi
 
   wait_for_slot
-  echo "LAUNCH $tag"
+  if [[ -n "$log_weight" ]]; then
+    echo "LAUNCH $tag log_weight=$log_weight"
+  else
+    echo "LAUNCH $tag"
+  fi
   mkdir -p "$ckpt"
   if [[ "$kind" == "car_race" ]]; then
     (

@@ -82,6 +82,28 @@ env = gym.make("CarParkingParallel-v0", observation_mode="goal_dict")
 python -m pytest car_parking/tests
 ```
 
+## Hybrid A* expert
+
+Expert는 환경과 같은 bicycle geometry와 oriented-box 충돌 판정으로 전진/후진
+lattice 경로를 찾습니다. 경로 pose를 state에 복사하지 않고, 조향 지연과
+gear switch를 처리하면서 모든 이동과 dwell을 실제 `env.step()`으로 실행합니다.
+
+```python
+from car_parking import CarParkingEnv, rollout_expert
+
+env = CarParkingEnv()
+result = rollout_expert(env, task_id=1, seed=0)
+print(result.success, result.steps)
+```
+
+Task 1–5 acceptance와 선택적인 시작 pose jitter는 다음처럼 검증합니다.
+
+```bash
+python -m car_parking.validate_expert --episodes-per-task 20 --seed 0
+python -m car_parking.validate_expert --episodes-per-task 5 --seed 0 \
+  --jitter-position 0.005 --jitter-heading-deg 1.0
+```
+
 ## 고정 task 데모
 
 Task 1–5의 개별 PNG와 전체 overview는 [`demo/`](demo/)에 있습니다.

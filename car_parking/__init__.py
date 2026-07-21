@@ -10,6 +10,17 @@ from .env import (
     fixed_task_options,
     register_environment,
 )
+from .hybrid_astar import (
+    HybridAStarPlanner,
+    PathPoint,
+    PlannerConfig,
+    path_is_collision_free,
+)
+from .parking_policy import (
+    ParkingExpertPolicy,
+    RolloutResult,
+    rollout_expert,
+)
 
 __all__ = [
     "MANEUVERS",
@@ -20,4 +31,11 @@ __all__ = [
     "ParkingLayout",
     "fixed_task_options",
     "register_environment",
+    "HybridAStarPlanner",
+    "PathPoint",
+    "PlannerConfig",
+    "path_is_collision_free",
+    "ParkingExpertPolicy",
+    "RolloutResult",
+    "rollout_expert",
 ]
