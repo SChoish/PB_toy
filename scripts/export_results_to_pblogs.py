@@ -5,11 +5,11 @@ Writes one latest-eval JSON per run under::
 
     logs/completed/pb_toy/<env>/<run_id>/eval/step{step}.json
 
-Each record includes ``algorithm``, ``dataset_size``, and ``host`` (plus task /
-policy / metrics). Also writes a flat ``logs/pb_toy/results.jsonl`` summary
-and copies ``scores.md``.
+Each record includes ``algorithm``, ``dataset_size``, ``weight``, and ``host``.
+Also writes a flat ``logs/pb_toy/results.jsonl`` summary.
 
-Idempotent: never overwrites an existing record file.
+By default skips existing destination files (idempotent). Use ``--overwrite``
+to refresh them.
 """
 
 from __future__ import annotations
@@ -19,29 +19,34 @@ import json
 import os
 import pathlib
 import re
-import shutil
 import socket
 from datetime import datetime, timezone
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 CKPT_ROOT = ROOT / "checkpoints"
-LOG_DIR = ROOT / "nohup_logs" / "matrix"
-DEFAULT_LOGS = pathlib.Path("/home/ext_csv/PathBridger/logs")
-
-CURRENT_K = 25
-CURRENT_H_A = 5
+LOG_DIRS = (
+    ROOT / "nohup_logs" / "train_10k_k10",
+    ROOT / "nohup_logs" / "train_1k_k10",
+    ROOT / "nohup_logs" / "matrix",
+)
+DEFAULT_LOGS = pathlib.Path("/home/svcho/PB_logs")
 
 LOADED_RE = re.compile(
     r"Loaded \w+ dataset size=(?P<size>\d+)(?:\s+task=\S+)? from (?P<path>\S+)"
 )
 SIZE_LABEL_RE = re.compile(r"_(?P<label>\d+k)\.npz$")
 STEP_RE = re.compile(r"^step_(\d+)\.json$")
+RECIPE_TAIL_RE = re.compile(r"_k(?P<k>\d+)(?:_ha(?P<ha>\d+))?_(?P<label>\d+k)$")
+MIXED_WEIGHT_RUNS = {
+    "car_race_anti_grav_navigation_pbg_random_s0_k10_ha2_10k": "w1→0@4k",
+    "car_race_anti_grav_navigation_pbf_random_s0_k10_ha2_10k": "w1→0@6k",
+}
 
 AGENTS = ("tr_hiql", "pbg", "pbf", "trl", "dqc", "hiql", "gcbc", "gciql")
 
 
 def _host() -> str:
-    return os.environ.get("PB_LOG_HOST") or socket.gethostname() or "unknown-host"
+    return os.environ.get("PB_LOG_HOST") or "svcho"
 
 
 def _sanitize(tok: str) -> str:
@@ -52,10 +57,18 @@ def _now_utc() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
-def _parse_tag(tag: str, kind: str) -> tuple[str, str, str, str, str]:
-    m = re.match(r"^(?P<body>.+)_s(?P<seed>\d+)$", tag)
-    seed = m.group("seed") if m else "?"
-    body = m.group("body") if m else tag
+def _parse_tag(tag: str, kind: str) -> tuple[str, str, str, str, str, int | None, int | None, str | None]:
+    """Return agent, env, task, seed, policy, K, h_a, size_label."""
+    recipe = RECIPE_TAIL_RE.search(tag)
+    k = int(recipe.group("k")) if recipe else None
+    ha = int(recipe.group("ha")) if recipe and recipe.group("ha") else None
+    size_label = recipe.group("label") if recipe else None
+    body = tag[: recipe.start()] if recipe else tag
+
+    seed_m = re.match(r"^(?P<body>.+)_s(?P<seed>\d+)$", body)
+    seed = seed_m.group("seed") if seed_m else "?"
+    body = seed_m.group("body") if seed_m else body
+
     policy = "expert"
     for pol in ("noisy", "random", "expert"):
         suf = f"_{pol}"
@@ -63,6 +76,7 @@ def _parse_tag(tag: str, kind: str) -> tuple[str, str, str, str, str]:
             body = body[: -len(suf)]
             policy = pol
             break
+
     agent = "?"
     for a in sorted(AGENTS, key=len, reverse=True):
         suf = f"_{a}"
@@ -70,8 +84,10 @@ def _parse_tag(tag: str, kind: str) -> tuple[str, str, str, str, str]:
             agent = a
             body = body[: -len(suf)]
             break
+
     if kind == "swingby":
-        return agent, body, "swingby", seed, policy
+        return agent, body, "swingby", seed, policy, k, ha, size_label
+
     parts = body.split("_")
     if len(parts) >= 3 and parts[0] == "car" and parts[1] == "race":
         if parts[2] == "anti" and len(parts) >= 4 and parts[3] == "grav":
@@ -80,41 +96,52 @@ def _parse_tag(tag: str, kind: str) -> tuple[str, str, str, str, str]:
         else:
             env = f"{parts[0]}_{parts[1]}_{parts[2]}"
             task = "_".join(parts[3:]) or "?"
-        return agent, env, task, seed, policy
-    return agent, body, "?", seed, policy
+        return agent, env, task, seed, policy, k, ha, size_label
+    return agent, body, "?", seed, policy, k, ha, size_label
 
 
-def _is_current_config(agent: str, config: dict | None) -> bool:
-    if not config:
-        return agent in ("trl", "dqc", "bc", "gcbc")
-    if agent in ("pbg", "pbf"):
-        return (
-            int(config.get("dynamics_N", -1)) == CURRENT_K
-            and int(config.get("subgoal_steps", -1)) == CURRENT_K
-            and int(config.get("action_chunk_horizon", -1)) == CURRENT_H_A
-        )
-    if agent in ("tr_hiql", "hiql"):
-        return int(config.get("subgoal_steps", -1)) == CURRENT_K
+def _is_selected_config(
+    agent: str,
+    config: dict | None,
+    *,
+    require_k: int | None,
+    require_ha: int | None,
+    tag_k: int | None,
+    tag_ha: int | None,
+) -> bool:
+    if require_k is None and require_ha is None:
+        return True
+    k = None
+    ha = None
+    if config:
+        if agent in ("pbg", "pbf"):
+            k = int(config.get("subgoal_steps", config.get("dynamics_N", -1)))
+            ha = int(config.get("action_chunk_horizon", -1))
+        elif agent in ("tr_hiql", "hiql", "trl"):
+            k = int(config.get("subgoal_steps", -1))
+    if k is None:
+        k = tag_k
+    if ha is None:
+        ha = tag_ha
+    if require_k is not None and k != require_k:
+        return False
+    if require_ha is not None and agent in ("pbg", "pbf") and ha != require_ha:
+        return False
     return True
 
 
 def _log_candidates(tag: str) -> list[pathlib.Path]:
-    """Resolve matrix log names; accept legacy ``_wpv2`` tags if present."""
-    names = [tag]
-    if "_wpv2_" in tag:
-        names.append(tag.replace("_wpv2_", "_", 1))
-    elif tag.endswith("_wpv2"):
-        names.append(tag[: -len("_wpv2")])
-    # Current lap tags omit _wpv2; also probe the legacy log name.
-    if "_lap_" in tag and "_wpv2" not in tag:
-        names.append(re.sub(r"(_lap_\d+p)_", r"\1_wpv2_", tag, count=1))
+    names = [tag, f"{tag}_w0", f"{tag}_w1"]
     out: list[pathlib.Path] = []
     seen: set[pathlib.Path] = set()
-    for name in names:
-        p = LOG_DIR / f"{name}.log"
-        if p.is_file() and p not in seen:
-            out.append(p)
-            seen.add(p)
+    for log_dir in LOG_DIRS:
+        for name in names:
+            p = log_dir / f"{name}.log"
+            if p.is_symlink():
+                p = p.resolve()
+            if p.is_file() and p not in seen:
+                out.append(p)
+                seen.add(p)
     return out
 
 
@@ -170,7 +197,7 @@ def _metrics_compact(metrics: dict) -> dict:
 
 
 def _primary_success(agent: str, metrics: dict) -> float | None:
-    if agent in ("pbg", "pbf") and "t1_mean_success" in metrics:
+    if agent in ("pbg", "pbf", "trl") and "t1_mean_success" in metrics:
         return float(metrics["t1_mean_success"])
     if "t0_mean_success" in metrics:
         return float(metrics["t0_mean_success"])
@@ -181,11 +208,34 @@ def _primary_success(agent: str, metrics: dict) -> float | None:
     return None
 
 
-def export(*, logs_root: pathlib.Path, apply: bool) -> dict:
+def _weight_label(tag: str, agent: str, config: dict) -> str | None:
+    if tag in MIXED_WEIGHT_RUNS:
+        return MIXED_WEIGHT_RUNS[tag]
+    if agent == "hiql":
+        return None
+    if agent == "trl":
+        return f"w{float(config.get('lam', 0.0)):g}"
+    if agent in {"pbg", "pbf"}:
+        return f"w{float(config.get('value_distance_weight_power', 1.0)):g}"
+    if agent == "tr_hiql":
+        return f"w{float(config.get('distance_weight_power', 1.0)):g}"
+    return None
+
+
+def export(
+    *,
+    logs_root: pathlib.Path,
+    apply: bool,
+    require_k: int | None,
+    require_ha: int | None,
+    size_label: str | None,
+    overwrite: bool,
+) -> dict:
     host = _host()
     written = 0
     skipped = 0
     skipped_recipe = 0
+    skipped_existing = 0
     rows: list[dict] = []
 
     for kind in ("car_race", "swingby"):
@@ -200,25 +250,35 @@ def export(*, logs_root: pathlib.Path, apply: bool) -> dict:
                 continue
             step, step_path = latest
             data = json.loads(step_path.read_text(encoding="utf-8"))
-            agent = str(data.get("agent") or "?")
             config = data.get("config") or {}
-            if not _is_current_config(agent, config if isinstance(config, dict) else None):
+            parsed = _parse_tag(tag, kind)
+            parsed_agent, env, task, seed_s, policy, tag_k, tag_ha, tag_size = parsed
+            agent = str(data.get("agent") or parsed_agent or "?")
+            if not _is_selected_config(
+                agent,
+                config if isinstance(config, dict) else None,
+                require_k=require_k,
+                require_ha=require_ha,
+                tag_k=tag_k,
+                tag_ha=tag_ha,
+            ):
                 skipped_recipe += 1
                 continue
-            parsed_agent, env, task, seed_s, policy = _parse_tag(tag, kind)
-            if agent == "?" and parsed_agent != "?":
-                agent = parsed_agent
+            if size_label is not None and tag_size != size_label:
+                skipped_recipe += 1
+                continue
             try:
                 seed = int(seed_s)
             except ValueError:
                 seed = 0
             ds_size, ds_label, ds_path = _dataset_from_log(tag)
             if ds_label is None:
-                ds_label = "100k"  # matrix default
+                ds_label = tag_size
             metrics = data.get("metrics") or {}
             primary = _primary_success(agent, metrics)
-            # Stable across re-exports so dest.exists() stays idempotent.
+            weight = _weight_label(tag, agent, config if isinstance(config, dict) else {})
             run_id = f"{_sanitize(host)}_pb_toy_{_sanitize(tag)}"
+            stdout_logs = _log_candidates(tag)
             rec = {
                 "schema_version": "1.0-pb_toy",
                 "record_id": f"{run_id}__eval__step{step}",
@@ -236,10 +296,11 @@ def export(*, logs_root: pathlib.Path, apply: bool) -> dict:
                 "dataset_size": ds_size,
                 "dataset_size_label": ds_label,
                 "dataset_path": ds_path,
+                "weight": weight,
                 "train": {
                     "steps": int(data.get("steps") or step),
-                    "K": CURRENT_K if agent in ("pbg", "pbf", "tr_hiql", "hiql") else None,
-                    "h_a": CURRENT_H_A if agent in ("pbg", "pbf") else None,
+                    "K": tag_k if tag_k is not None else require_k,
+                    "h_a": tag_ha if agent in ("pbg", "pbf") else None,
                     "discount": config.get("discount") if isinstance(config, dict) else None,
                 },
                 "eval": {
@@ -250,7 +311,7 @@ def export(*, logs_root: pathlib.Path, apply: bool) -> dict:
                 "primary_success": primary,
                 "artifacts": {
                     "checkpoint_json": str(step_path),
-                    "stdout_log": str(LOG_DIR / f"{tag}.log"),
+                    "stdout_log": str(stdout_logs[0]) if stdout_logs else None,
                 },
             }
             dest_dir = (
@@ -271,6 +332,7 @@ def export(*, logs_root: pathlib.Path, apply: bool) -> dict:
                 "seed": seed,
                 "dataset_size": ds_size,
                 "dataset_size_label": ds_label,
+                "weight": weight,
                 "step": step,
                 "primary_success": primary,
                 "run_id": run_id,
@@ -278,6 +340,9 @@ def export(*, logs_root: pathlib.Path, apply: bool) -> dict:
             }
             rows.append(row)
             if apply:
+                if dest.exists() and not overwrite:
+                    skipped_existing += 1
+                    continue
                 dest_dir.mkdir(parents=True, exist_ok=True)
                 dest.write_text(
                     json.dumps(rec, indent=2, sort_keys=True, allow_nan=False) + "\n",
@@ -290,26 +355,30 @@ def export(*, logs_root: pathlib.Path, apply: bool) -> dict:
     summary = {
         "host": host,
         "created_at": _now_utc(),
-        "recipe": {"K": CURRENT_K, "h_a": CURRENT_H_A},
+        "recipe": {"K": require_k, "h_a": require_ha, "size_label": size_label},
         "n_written": written,
-        "n_skipped_existing_or_empty": skipped,
-        "n_skipped_old_recipe": skipped_recipe,
+        "n_skipped_missing": skipped,
+        "n_skipped_recipe_or_size": skipped_recipe,
+        "n_skipped_existing": skipped_existing,
         "n_rows": len(rows),
     }
 
     if apply:
         out_dir = logs_root / "pb_toy"
         out_dir.mkdir(parents=True, exist_ok=True)
-        jsonl = out_dir / "results.jsonl"
+        suffix = []
+        if size_label:
+            suffix.append(size_label)
+        if require_k is not None:
+            suffix.append(f"k{require_k}")
+        name = "results_" + "_".join(suffix) if suffix else "results"
+        jsonl = out_dir / f"{name}_svcho.jsonl"
         with jsonl.open("w", encoding="utf-8") as f:
             for row in rows:
                 f.write(json.dumps(row, sort_keys=True, allow_nan=False) + "\n")
-        (out_dir / "export_meta.json").write_text(
+        (out_dir / f"export_meta_{name}_svcho.json").write_text(
             json.dumps(summary, indent=2, sort_keys=True) + "\n", encoding="utf-8"
         )
-        scores_src = ROOT / "scores.md"
-        if scores_src.is_file():
-            shutil.copy2(scores_src, out_dir / "scores.md")
 
     return summary
 
@@ -318,8 +387,19 @@ def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--logs-root", type=pathlib.Path, default=DEFAULT_LOGS)
     ap.add_argument("--apply", action="store_true", help="write files (default: dry-run)")
+    ap.add_argument("--overwrite", action="store_true")
+    ap.add_argument("--k", type=int, default=10)
+    ap.add_argument("--h-a", type=int, default=2)
+    ap.add_argument("--size-label", default="10k")
     args = ap.parse_args()
-    summary = export(logs_root=args.logs_root, apply=args.apply)
+    summary = export(
+        logs_root=args.logs_root,
+        apply=args.apply,
+        require_k=args.k,
+        require_ha=args.h_a,
+        size_label=args.size_label,
+        overwrite=args.overwrite,
+    )
     mode = "APPLY" if args.apply else "DRY-RUN"
     print(f"[{mode}] {json.dumps(summary, sort_keys=True)}")
 
