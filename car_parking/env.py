@@ -301,6 +301,7 @@ def _layout(
     aisle_width: float = 0.48,
     car_length: float = 0.18,
     car_width: float = 0.10,
+    slot_shift_x: float = 0.0,
 ) -> ParkingLayout:
     """Construct a compact, lane-consistent parking lot.
 
@@ -310,7 +311,9 @@ def _layout(
     """
     variant = int(variant)
     mirror = -1.0 if variant % 2 else 1.0
-    lateral_shift = 0.035 * ((variant - 1) % 3 - 1)
+    lateral_shift = (
+        0.035 * ((variant - 1) % 3 - 1) + float(slot_shift_x)
+    )
 
     # A simple right-side parking convention:
     # bottom row -> drive east; top row -> drive west.  In both cases the
@@ -526,6 +529,7 @@ class CarParkingEnv(gym.Env):
                 -1.0,
                 0.0,
                 0.0,
+                0.0,
             ],
             dtype=self._dtype,
         )
@@ -541,15 +545,16 @@ class CarParkingEnv(gym.Env):
                 1.0,
                 1.0,
                 self.config.initial_health,
+                1.0,
             ],
             dtype=self._dtype,
         )
         goal_low = np.array(
-            [self.config.arena_low, self.config.arena_low, -1.0, -1.0],
+            [self.config.arena_low, self.config.arena_low, -1.0, -1.0, 0.0],
             dtype=self._dtype,
         )
         goal_high = np.array(
-            [self.config.arena_high, self.config.arena_high, 1.0, 1.0],
+            [self.config.arena_high, self.config.arena_high, 1.0, 1.0, 1.0],
             dtype=self._dtype,
         )
         if observation_mode == "state":
@@ -608,20 +613,43 @@ class CarParkingEnv(gym.Env):
     def desired_goal(self) -> Array:
         slot = self.layout.slot
         return np.array(
-            [slot.center[0], slot.center[1], np.cos(slot.heading), np.sin(slot.heading)],
+            [
+                slot.center[0],
+                slot.center[1],
+                np.cos(slot.heading),
+                np.sin(slot.heading),
+                1.0,
+            ],
             dtype=self._dtype,
         )
 
     @property
     def achieved_goal(self) -> Array:
         return np.array(
-            [self.position[0], self.position[1], np.cos(self.heading), np.sin(self.heading)],
+            [
+                self.position[0],
+                self.position[1],
+                np.cos(self.heading),
+                np.sin(self.heading),
+                self.dwell_progress,
+            ],
             dtype=self._dtype,
         )
 
     @property
     def distance_to_goal(self) -> float:
         return float(np.linalg.norm(self.position - np.asarray(self.layout.slot.center)))
+
+    @property
+    def dwell_progress(self) -> float:
+        """Observable progress toward the consecutive parked-pose requirement."""
+        return float(
+            np.clip(
+                self.dwell_count / self.config.dwell_steps,
+                0.0,
+                1.0,
+            )
+        )
 
     @property
     def heading_error(self) -> float:
@@ -663,6 +691,7 @@ class CarParkingEnv(gym.Env):
                 self.heading_error / np.pi,
                 float(self.fully_inside_slot),
                 float(self.health),
+                self.dwell_progress,
             ],
             dtype=self._dtype,
         )
@@ -697,12 +726,16 @@ class CarParkingEnv(gym.Env):
         if maneuver not in MANEUVERS:
             raise ValueError(f"Unknown maneuver: {maneuver}")
         variant = int(options.pop("variant", self.np_random.integers(1, 6)))
+        slot_shift_x = float(options.pop("slot_shift_x", 0.0))
+        if not np.isfinite(slot_shift_x) or abs(slot_shift_x) > 0.12:
+            raise ValueError("slot_shift_x must be finite and within [-0.12, 0.12]")
         self.layout = _layout(
             maneuver,
             variant,
             self.config.aisle_width,
             self.config.car_length,
             self.config.car_width,
+            slot_shift_x,
         )
 
         default_position = np.asarray(self.layout.start, dtype=self._dtype)
@@ -983,15 +1016,27 @@ class CarParkingEnv(gym.Env):
     def compute_reward(
         self, achieved_goal: Array, desired_goal: Array, info: Any | None = None
     ) -> Array | float:
-        """Goal-conditioned sparse reward for scalar or batched poses."""
+        """Goal-conditioned reward consistent with actual parking success.
+
+        The fifth coordinate is the reached/dwell bit.  It becomes one only
+        after containment, alignment, low speed, and the full dwell
+        requirement have all been satisfied.
+        """
         achieved = np.asarray(achieved_goal, dtype=np.float32)
         desired = np.asarray(desired_goal, dtype=np.float32)
+        if achieved.shape[-1] != 5 or desired.shape[-1] != 5:
+            raise ValueError("parking achieved/desired goals must be 5-D")
         position_ok = np.linalg.norm(achieved[..., :2] - desired[..., :2], axis=-1) <= (
             min(self.layout.slot.length - self.config.car_length, self.layout.slot.width - self.config.car_width) / 2.0
         )
         dot = np.sum(achieved[..., 2:4] * desired[..., 2:4], axis=-1)
         angle_ok = dot >= np.cos(self.config.orientation_tolerance)
-        result = np.where(position_ok & angle_ok, self.config.success_reward, -self.config.step_penalty).astype(np.float32)
+        reached_ok = achieved[..., 4] >= desired[..., 4] - 1e-6
+        result = np.where(
+            position_ok & angle_ok & reached_ok,
+            self.config.success_reward,
+            -self.config.step_penalty,
+        ).astype(np.float32)
         return float(result) if result.ndim == 0 else result
 
     def _get_observation(self) -> Any:
@@ -1024,6 +1069,7 @@ class CarParkingEnv(gym.Env):
             "parked_pose": bool(self.parked_pose),
             "fully_inside_slot": bool(self.fully_inside_slot),
             "dwell_count": int(self.dwell_count),
+            "dwell_progress": self.dwell_progress,
             "distance_to_goal": self.distance_to_goal,
             "heading_error": self.heading_error,
             "maneuver": self.layout.maneuver,

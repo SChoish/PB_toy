@@ -46,14 +46,16 @@ Defaults: [`agents/HYPERPARAMETERS.md`](agents/HYPERPARAMETERS.md).
 
 ## Benchmark contract
 
-Both environments expose five fixed evaluation tasks with task IDs 1 through 5
-via `env.reset(options={"task_id": n})`; `info["goal"]` is exactly the 4-D goal
-passed to the agent and `info["success"]` reports task completion. Datasets use
+CarRace and Swingby expose five fixed evaluation tasks with task IDs 1 through 5
+via `env.reset(options={"task_id": n})`; their `info["goal"]` is the
+4-D goal passed to the agent. CarParking uses the same task API with a 5-D
+`[x, y, cos(yaw), sin(yaw), reached]` goal and an observable dwell progress.
+For every environment `info["success"]` reports task completion. Datasets use
 regular transition tuples with explicit `next_observations`. Train/validation
 splits use disjoint seeds and retain whole episodes. `terminals` marks trajectory
 boundaries, while goal-conditioned Bellman masks are computed separately from
-the relabeled goal success and true absorbing failures (health depletion,
-death, or escape), not from recoverable contacts or time-limit boundaries.
+the relabeled goal success and true absorbing failures (health depletion, death,
+or escape), not from recoverable contacts or time-limit boundaries.
 
 ## CarRace
 

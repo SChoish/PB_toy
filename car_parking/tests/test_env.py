@@ -53,6 +53,18 @@ class CarParkingApiTest(unittest.TestCase):
             ["parallel", "parallel", "t_reverse", "t_forward", "angled"],
         )
 
+    def test_continuous_slot_shift_changes_goal_without_changing_task(self):
+        env = CarParkingEnv()
+        _, base = env.reset(options={"task_id": 3})
+        base_start = env.position.copy()
+        _, shifted = env.reset(
+            options={"task_id": 3, "slot_shift_x": 0.025}
+        )
+        self.assertAlmostEqual(shifted["goal"][0] - base["goal"][0], 0.025)
+        np.testing.assert_allclose(env.position, base_start)
+        self.assertEqual(shifted["task_id"], 3)
+        env.close()
+
     def test_registration(self):
         register_environment()
         for env_id in (
@@ -152,7 +164,7 @@ class CarParkingDynamicsTest(unittest.TestCase):
         self.assertLess(info["health"], env.config.initial_health)
         self.assertGreater(info["health_loss"], 0.0)
         self.assertGreater(info["step_impulse"], 0.0)
-        self.assertAlmostEqual(observation[-1], info["health"])
+        self.assertAlmostEqual(observation[9], info["health"])
         self.assertLess(reward, 0.0)
 
         env.position = np.array([-0.80, -0.88], dtype=np.float32)
@@ -202,11 +214,11 @@ class CarParkingDynamicsTest(unittest.TestCase):
         observation, info = env.reset(
             options={"variant": 1, "health": 0.4}
         )
-        self.assertAlmostEqual(observation[-1], 0.4)
+        self.assertAlmostEqual(observation[9], 0.4)
         self.assertAlmostEqual(info["health"], 0.4)
         observation, info = env.reset(options={"variant": 1})
         self.assertAlmostEqual(
-            observation[-1], env.config.initial_health
+            observation[9], env.config.initial_health
         )
         self.assertAlmostEqual(
             info["health"], env.config.initial_health
@@ -253,22 +265,38 @@ class CarParkingSuccessTest(unittest.TestCase):
 
     def test_success_needs_dwell_steps(self):
         config = CarParkingConfig(maneuver="parallel", dwell_steps=3)
-        env = CarParkingEnv(config)
+        env = CarParkingEnv(config, observation_mode="state")
         env.reset(options={"variant": 1})
         env.position = np.asarray(env.layout.slot.center, dtype=np.float32)
         env.heading = env.layout.slot.heading
+        desired = env.desired_goal.copy()
+        self.assertEqual(env.achieved_goal[-1], 0.0)
+        self.assertLess(
+            env.compute_reward(env.achieved_goal, desired),
+            config.success_reward,
+        )
         for step in range(config.dwell_steps):
-            _, _, terminated, _, info = env.step(np.zeros(2, dtype=np.float32))
+            observation, _, terminated, _, info = env.step(
+                np.zeros(2, dtype=np.float32)
+            )
             self.assertEqual(info["dwell_count"], step + 1)
+            self.assertAlmostEqual(
+                observation[-1], (step + 1) / config.dwell_steps
+            )
         self.assertTrue(terminated)
         self.assertTrue(info["is_success"])
+        self.assertEqual(env.achieved_goal[-1], 1.0)
+        self.assertEqual(
+            env.compute_reward(env.achieved_goal, desired),
+            config.success_reward,
+        )
         env.close()
 
     def test_goal_reward_supports_batches(self):
         env = CarParkingEnv(CarParkingConfig(maneuver="parallel"))
         env.reset(options={"variant": 1})
         desired = env.desired_goal
-        achieved = np.stack([desired, desired + np.array([1.0, 0.0, 0.0, 0.0])])
+        achieved = np.stack([desired, desired + np.array([1.0, 0.0, 0.0, 0.0, 0.0])])
         rewards = env.compute_reward(achieved, np.broadcast_to(desired, achieved.shape))
         self.assertEqual(rewards.shape, (2,))
         self.assertGreater(rewards[0], rewards[1])

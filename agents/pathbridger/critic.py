@@ -202,7 +202,14 @@ class CriticAgent(flax.struct.PyTreeNode):
         )
         q_pred = jnp.clip(jax.nn.sigmoid(q_logits), eps, 1.0)
         q_offsets = jnp.asarray(batch.get('q_goal_offsets', batch['value_offsets']), dtype=jnp.float32)
-        h = jnp.asarray(float(_ACTION_CHUNK_HORIZON), dtype=jnp.float32)
+        h = jnp.asarray(
+            float(
+                self.config.get(
+                    'action_chunk_horizon', _ACTION_CHUNK_HORIZON
+                )
+            ),
+            dtype=jnp.float32,
+        )
         target_v_logits = self.network.select('target_value')(
             batch['action_chunk_next_observations'], q_goals,
         )

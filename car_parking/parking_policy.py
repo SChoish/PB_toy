@@ -49,10 +49,17 @@ class ParkingExpertPolicy:
         self._last_position = self.env.position.copy()
         self._final_gear: int | None = None
 
-    def reset(self) -> list[PathPoint]:
-        self.path = HybridAStarPlanner(
-            self.env, self.planner_config
-        ).plan()
+    def reset(
+        self, path: list[PathPoint] | None = None
+    ) -> list[PathPoint]:
+        """Plan a path or resynchronize the tracker to a supplied path."""
+        self.path = (
+            list(path)
+            if path is not None
+            else HybridAStarPlanner(self.env, self.planner_config).plan()
+        )
+        if not self.path:
+            raise ValueError("parking expert path must not be empty")
         self.index = 0
         self.replans = 0
         self._off_path_steps = 0

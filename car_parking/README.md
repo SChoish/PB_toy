@@ -52,14 +52,15 @@ env = gym.make("CarParkingParallel-v0", observation_mode="goal_dict")
 
 ## 관측과 성공 조건
 
-상태는 다음 10차원입니다.
+상태는 다음 11차원입니다.
 
 ```text
 [x, y, cos(yaw), sin(yaw), speed, normalized_steering,
- distance_to_slot, normalized_yaw_error, inside_slot, health]
+ distance_to_slot, normalized_yaw_error, inside_slot, health, dwell_progress]
 ```
 
-목표는 `[goal_x, goal_y, cos(goal_yaw), sin(goal_yaw)]`입니다.
+목표는 `[goal_x, goal_y, cos(goal_yaw), sin(goal_yaw), reached]`입니다.
+`reached=1`은 containment·정렬·저속·dwell을 모두 마쳤다는 뜻입니다.
 `state`, `state_goal`, `goal_dict` 관측 모드를 지원합니다.
 
 주차 성공에는 다음 조건이 모두 필요합니다.
@@ -73,7 +74,7 @@ env = gym.make("CarParkingParallel-v0", observation_mode="goal_dict")
 `info["goal"]`, `info["is_success"]`, `info["collision"]`,
 `info["dead"]`, `info["health"]`, `info["health_loss"]`,
 `info["step_impulse"]`, `info["fully_inside_slot"]`,
-`info["dwell_count"]`를 제공합니다.
+`info["dwell_count"]`, `info["dwell_progress"]`를 제공합니다.
 
 충돌은 기본적으로 즉시 episode를 끝내지 않고 impact impulse에 비례해 health를
 깎습니다. 기본 damage capacity는 의도적으로 작아 저속 접촉도 큰 손상을 주며,
@@ -84,6 +85,13 @@ absorbing failure를 뜻합니다.
 
 주행 통로 폭은 기본 `0.48`이며 `CarParkingConfig(aisle_width=...)`로
 조절할 수 있습니다. 맞은편 보도 경계는 장식이 아니라 실제 충돌 영역입니다.
+
+`reset(options={"task_id": 3, "slot_shift_x": 0.02})`처럼 target row를
+연속적으로 이동할 수 있습니다. 고정 평가는 shift 0을 사용하고, dataset train과
+validation은 서로 겹치지 않는 shift 범위를 사용합니다.
+
+`dwell_progress`가 state에 포함되므로 동일한 관측에서 과거 이력에 따라 성공
+여부가 달라지지 않습니다.
 
 ## 테스트
 
@@ -126,3 +134,11 @@ python -m car_parking.render_demos
 
 Goal leakage를 피하는 raw schema, Hybrid A* expert, HER 규칙과 검증 기준은
 [`DATASET_DESIGN.md`](DATASET_DESIGN.md)에 정리되어 있습니다.
+
+기본 학습 파일은 `parking_v2`의 `mixture`이며 5개 task를 episode/batch
+양쪽에서 균등하게 다룹니다.
+
+```bash
+python -m car_parking.generate_dataset --policy mixture --size 1k
+python -m car_parking.train --agent hiql --dataset-size 1k
+```
