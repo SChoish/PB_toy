@@ -43,14 +43,12 @@ research = [
     "tensorflow-probability>=0.24,<0.26",
 ]
 test = [
+    "pathbridger-toy-examples[research]",
     "pytest>=7.4",
 ]
 dev = [
+    "pathbridger-toy-examples[research,render,test]",
     "build>=1.0",
-    "imageio>=2.31",
-    "matplotlib>=3.7",
-    "pillow>=10",
-    "pytest>=7.4",
 ]
 
 [project.scripts]
