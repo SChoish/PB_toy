@@ -1,4 +1,4 @@
-# PB toy 결과 — noisy 100k · **@100k / @200k** (2026-07-23 23:23 KST)
+# PB toy 결과 — noisy 100k · **@100k / @200k** (2026-07-23 23:33 KST)
 
 - 셀: **`@100k / @200k`** mean success (%). csh·dgx(200k 완료) 병합, 출처 구분 없음.
 - 러닝커브: `PB_toy_learning_curves_noisy100k_csh.png`
