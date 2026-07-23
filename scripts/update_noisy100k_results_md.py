@@ -246,7 +246,7 @@ def main() -> None:
                 lines.append(
                     f"| {key} | {a} | {float(row['success_pct']):.1f} | "
                     f"{int(row['N'])} | {float(row['T']):g} | "
-                    f"{int(row['coverage'])}/24 |"
+                    f"{int(row['coverage'])}/19 |"
                 )
 
     OUT.write_text("\n".join(lines) + "\n", encoding="utf-8")
