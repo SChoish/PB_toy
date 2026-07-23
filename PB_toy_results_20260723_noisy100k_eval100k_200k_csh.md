@@ -1,4 +1,4 @@
-# PB toy 결과 — noisy 100k · **@100k / @200k** (2026-07-24 04:17 KST)
+# PB toy 결과 — noisy 100k · **@100k / @200k** (2026-07-24 04:27 KST)
 
 - 셀: **`@100k / @200k`** mean success (%). csh·dgx(200k 완료) 병합, 출처 구분 없음.
 - `*` on @200k = NT sweep best (`scripts/parse_pb_noisy100k_nt_sweep.py`).
@@ -35,7 +35,7 @@
 | env/task | agent | best % | N | T | coverage |
 |---|---|---:|---:|---:|---:|
 | ice/lap_1p | pbf | 46.4 | 8 | 0.5 | 19/19 |
-| ice/lap_2p | pbf | 55.2 | 16 | 0.5 | 16/19 |
+| ice/lap_2p | pbf | 55.2 | 16 | 0.5 | 19/19 |
 | grav/lap_1p | pbf | 92.8 | 8 | 1 | 19/19 |
 | grav/lap_2p | pbf | 100.0 | 16 | 0.5 | 19/19 |
 | grav/lap_4p | pbf | 100.0 | 16 | 0.5 | 19/19 |
