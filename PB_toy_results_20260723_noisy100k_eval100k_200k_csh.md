@@ -1,4 +1,4 @@
-# PB toy 결과 — noisy 100k · **@100k / @200k** (2026-07-24 05:18 KST)
+# PB toy 결과 — noisy 100k · **@100k / @200k** (2026-07-24 05:28 KST)
 
 - 셀: **`@100k / @200k`** mean success (%). csh·dgx(200k 완료) 병합, 출처 구분 없음.
 - `*` on @200k = NT sweep best (`scripts/parse_pb_noisy100k_nt_sweep.py`).
@@ -19,8 +19,8 @@
 | anti_grav/lap_1p | 18.4 / 44.8 | 63.2 / 48.0 | 60.8 / 62.4 | 96.0 / 97.6* |
 | anti_grav/lap_2p | 39.2 / 53.6 | 33.6 / 36.8 | 48.8 / 60.8 | 78.4 / 94.4* |
 | anti_grav/lap_4p | 37.6 / 31.2 | 67.2 / 52.0 | 44.0 / 42.4 | 97.6 / 100.0* |
-| planet/swingby | 20.0 / 20.8 | 48.8 / 59.2 | 60.0 / 60.0 | 59.2 / 60.0 |
-| blackhole/swingby | 14.4 / 20.8 | 49.6 / 59.2 | 37.6 / 31.2 | 37.6 / 36.8* |
+| planet/swingby | 20.0 / 20.8 | 48.8 / 59.2 | 60.0 / 60.0 | 59.2 / 60.0* |
+| blackhole/swingby | 14.4 / 20.8 | 49.6 / 59.2 | 37.6 / 31.2 | 37.6 / 37.6* |
 | car_parking | 0.0 / 0.0 | 0.0 / 0.0 | 0.0 / 12.0 | 0.0 / 0.0 |
 
 ## Agent mean
@@ -36,11 +36,12 @@
 |---|---|---:|---:|---:|---:|
 | ice/lap_1p | pbf | 46.4 | 8 | 0.5 | 19/19 |
 | ice/lap_2p | pbf | 55.2 | 16 | 0.5 | 19/19 |
-| ice/lap_4p | pbf | 2.4 | 16 | 1 | 18/19 |
+| ice/lap_4p | pbf | 2.4 | 16 | 1 | 19/19 |
 | grav/lap_1p | pbf | 92.8 | 8 | 1 | 19/19 |
 | grav/lap_2p | pbf | 100.0 | 16 | 0.5 | 19/19 |
 | grav/lap_4p | pbf | 100.0 | 16 | 0.5 | 19/19 |
 | anti_grav/lap_1p | pbf | 97.6 | 16 | 0.5 | 24/19 |
 | anti_grav/lap_2p | pbf | 94.4 | 1 | 0.5 | 24/19 |
 | anti_grav/lap_4p | pbf | 100.0 | 8 | 0.25 | 20/19 |
-| blackhole/swingby | pbf | 36.8 | 1 | 0 | 9/19 |
+| planet/swingby | pbf | 60.0 | 8 | 0.25 | 11/19 |
+| blackhole/swingby | pbf | 37.6 | 32 | 0.5 | 19/19 |
