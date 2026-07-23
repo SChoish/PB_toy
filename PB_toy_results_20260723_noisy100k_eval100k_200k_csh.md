@@ -1,6 +1,7 @@
-# PB toy 결과 — noisy 100k · **@100k / @200k** (2026-07-24 00:04 KST)
+# PB toy 결과 — noisy 100k · **@100k / @200k** (2026-07-24 00:14 KST)
 
 - 셀: **`@100k / @200k`** mean success (%). csh·dgx(200k 완료) 병합, 출처 구분 없음.
+- `*` on @200k = NT sweep best (`scripts/parse_pb_noisy100k_nt_sweep.py`).
 - 러닝커브: `PB_toy_learning_curves_noisy100k_csh.png`
 - 이 파일은 `scripts/sync_pb_toy_to_pblogs_csh.sh` 워처가 주기적으로 갱신.
 - agents: hiql, tr_hiql, pbg, pbf (trl 제외)
@@ -15,7 +16,7 @@
 | grav/lap_1p | 95.2 / 80.0 | 97.6 / 67.2 | 85.6 / 84.8 | 99.2 / 94.4 |
 | grav/lap_2p | 96.8 / 83.2 | 40.0 / 98.4 | 68.0 / 80.8 | 100.0 / 97.6 |
 | grav/lap_4p | 61.6 / 43.2 | 80.0 / 68.8 | 82.4 / 76.0 | 93.6 / 99.2 |
-| anti_grav/lap_1p | 18.4 / 44.8 | 63.2 / 48.0 | 60.8 / 62.4 | 96.0 / 77.6 |
+| anti_grav/lap_1p | 18.4 / 44.8 | 63.2 / 48.0 | 60.8 / 62.4 | 96.0 / 96.0* |
 | anti_grav/lap_2p | 39.2 / 53.6 | 33.6 / 36.8 | 48.8 / 60.8 | 78.4 / 73.6 |
 | anti_grav/lap_4p | 37.6 / 31.2 | 67.2 / 52.0 | 44.0 / 42.4 | 97.6 / 94.4 |
 | planet/swingby | 20.0 / 20.8 | 48.8 / 59.2 | 60.0 / 60.0 | 59.2 / 60.0 |
@@ -27,4 +28,10 @@
 | budget | hiql | tr_hiql | pbg | pbf |
 |---|---:|---:|---:|---:|
 | @100k | 37.1 | 46.4 | 48.2 | 62.0 |
-| @200k | 34.7 | 41.6 | 49.8 | 59.5 |
+| @200k | 34.7 | 41.6 | 49.8 | 61.0 |
+
+## NT sweep best (@200k, applied `*` cells)
+
+| env/task | agent | best % | N | T | coverage |
+|---|---|---:|---:|---:|---:|
+| anti_grav/lap_1p | pbf | 96.0 | 1 | 1 | 12/24 |

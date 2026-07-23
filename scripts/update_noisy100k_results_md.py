@@ -11,6 +11,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 OUT = ROOT / "PB_toy_results_20260723_noisy100k_eval100k_200k_csh.md"
 PB_LOGS = Path("/home/ext_csh/PB_logs/completed/pb_toy")
+NT_JSON = ROOT / "PB_toy_nt_sweep_noisy100k_200k.json"
 AGENTS = ["hiql", "tr_hiql", "pbg", "pbf"]  # trl excluded
 ORDER = [
     "ice/lap_1p",
@@ -70,9 +71,47 @@ def load_json(path: Path):
         return None
 
 
+def load_nt_best_200k() -> dict[tuple[str, str], dict]:
+    """(env/task, agent) -> {success_pct, N, T, coverage} from NT parser JSON."""
+    # Prefer fresh parse from PB_logs; fall back to cached JSON.
+    try:
+        import importlib.util
+
+        spec = importlib.util.spec_from_file_location(
+            "parse_pb_noisy100k_nt_sweep",
+            ROOT / "scripts" / "parse_pb_noisy100k_nt_sweep.py",
+        )
+        if spec is not None and spec.loader is not None:
+            mod = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(mod)
+            grouped = mod.load_nt_rows(
+                PB_LOGS, ckpt_step=200000, agents={"pbf", "pbg"}
+            )
+            best = mod.best_per_tag(grouped)
+            out: dict[tuple[str, str], dict] = {}
+            for row in best.values():
+                key = row.get("key")
+                agent = row.get("agent")
+                if key and agent:
+                    out[(key, agent)] = row
+            if out:
+                return out
+    except Exception:
+        pass
+    cached = load_json(NT_JSON) or {}
+    out = {}
+    for row in (cached.get("best") or {}).values():
+        key = row.get("key")
+        agent = row.get("agent")
+        if key and agent:
+            out[(key, agent)] = row
+    return out
+
+
 def main() -> None:
     best100: dict = {}
     best200: dict = {}
+    nt_best = load_nt_best_200k()
 
     # local checkpoints (rank 0)
     for root in (ROOT / "checkpoints").iterdir():
@@ -140,6 +179,7 @@ def main() -> None:
         f"# PB toy 결과 — noisy 100k · **@100k / @200k** ({now.strftime('%Y-%m-%d %H:%M')} KST)",
         "",
         "- 셀: **`@100k / @200k`** mean success (%). csh·dgx(200k 완료) 병합, 출처 구분 없음.",
+        "- `*` on @200k = NT sweep best (`scripts/parse_pb_noisy100k_nt_sweep.py`).",
         "- 러닝커브: `PB_toy_learning_curves_noisy100k_csh.png`",
         "- 이 파일은 `scripts/sync_pb_toy_to_pblogs_csh.sh` 워처가 주기적으로 갱신.",
         f"- agents: {', '.join(AGENTS)} (trl 제외)",
@@ -157,17 +197,23 @@ def main() -> None:
         for a in AGENTS:
             a1 = best100.get((key, a))
             a2 = best200.get((key, a))
-            if not a1 and not a2:
+            nt = nt_best.get((key, a))
+            if not a1 and not a2 and not nt:
                 cells.append("—")
                 continue
             anyd = True
             left = f"{a1[0]:.1f}" if a1 else "—"
-            right = f"{a2[0]:.1f}" if a2 else "—"
+            if nt is not None:
+                right = f"{float(nt['success_pct']):.1f}*"
+                vals200[a].append(float(nt["success_pct"]))
+            elif a2:
+                right = f"{a2[0]:.1f}"
+                vals200[a].append(a2[0])
+            else:
+                right = "—"
             cells.append(f"{left} / {right}")
             if a1:
                 vals100[a].append(a1[0])
-            if a2:
-                vals200[a].append(a2[0])
         if anyd:
             lines.append("| " + " | ".join([key] + cells) + " |")
 
@@ -184,8 +230,27 @@ def main() -> None:
         ]
         lines.append("| " + " | ".join([label] + cells) + " |")
 
+    if nt_best:
+        lines += [
+            "",
+            "## NT sweep best (@200k, applied `*` cells)",
+            "",
+            "| env/task | agent | best % | N | T | coverage |",
+            "|---|---|---:|---:|---:|---:|",
+        ]
+        for key in ORDER:
+            for a in AGENTS:
+                row = nt_best.get((key, a))
+                if not row:
+                    continue
+                lines.append(
+                    f"| {key} | {a} | {float(row['success_pct']):.1f} | "
+                    f"{int(row['N'])} | {float(row['T']):g} | "
+                    f"{int(row['coverage'])}/24 |"
+                )
+
     OUT.write_text("\n".join(lines) + "\n", encoding="utf-8")
-    print(f"wrote {OUT}")
+    print(f"wrote {OUT} nt_cells={len(nt_best)}")
 
 
 if __name__ == "__main__":
