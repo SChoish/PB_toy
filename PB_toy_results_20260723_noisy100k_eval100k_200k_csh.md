@@ -1,4 +1,4 @@
-# PB toy 결과 — noisy 100k · **@100k / @200k** (2026-07-24 05:28 KST)
+# PB toy 결과 — noisy 100k · **@100k / @200k** (2026-07-24 05:38 KST)
 
 - 셀: **`@100k / @200k`** mean success (%). csh·dgx(200k 완료) 병합, 출처 구분 없음.
 - `*` on @200k = NT sweep best (`scripts/parse_pb_noisy100k_nt_sweep.py`).
@@ -43,5 +43,5 @@
 | anti_grav/lap_1p | pbf | 97.6 | 16 | 0.5 | 24/19 |
 | anti_grav/lap_2p | pbf | 94.4 | 1 | 0.5 | 24/19 |
 | anti_grav/lap_4p | pbf | 100.0 | 8 | 0.25 | 20/19 |
-| planet/swingby | pbf | 60.0 | 8 | 0.25 | 11/19 |
+| planet/swingby | pbf | 60.0 | 16 | 0.5 | 19/19 |
 | blackhole/swingby | pbf | 37.6 | 32 | 0.5 | 19/19 |
