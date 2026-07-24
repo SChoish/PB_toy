@@ -33,7 +33,10 @@ once() {
   "$PY" -u scripts/export_results_to_pblogs.py --apply --k 10 --h-a 2 "${extra[@]}"
   if [[ "$UPDATE_RESULTS_MD" == "1" ]]; then
     log "parse_pb_noisy100k_nt_sweep.py"
-    "$PY" -u scripts/parse_pb_noisy100k_nt_sweep.py || log "WARN nt sweep parse failed rc=$?"
+    "$PY" -u scripts/parse_pb_noisy100k_nt_sweep.py --agents pbf || log "WARN nt sweep parse failed rc=$?"
+    log "parse_pb_noisy10k_nt_sweep"
+    "$PY" -u scripts/parse_pb_noisy100k_nt_sweep.py --size-suffix 10k --agents pbf,pbg \
+      || log "WARN 10k nt sweep parse failed rc=$?"
     log "update_noisy100k_results_md.py"
     "$PY" -u scripts/update_noisy100k_results_md.py || log "WARN results md update failed rc=$?"
     log "plot_noisy100k_learning_curves.py"
@@ -54,7 +57,9 @@ once() {
         PB_toy_results_noisy10k_eval100k_200k_csh.md \
         PB_toy_learning_curves_noisy10k_csh.png \
         PB_toy_nt_sweep_noisy100k_200k.md \
-        PB_toy_nt_sweep_noisy100k_200k.json
+        PB_toy_nt_sweep_noisy100k_200k.json \
+        PB_toy_nt_sweep_noisy10k_200k.md \
+        PB_toy_nt_sweep_noisy10k_200k.json
       do
         [[ -f "$ROOT/$f" ]] && cp -a "$ROOT/$f" "$LOGS_ROOT/pb_toy/$f"
       done
