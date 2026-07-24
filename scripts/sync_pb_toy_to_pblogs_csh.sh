@@ -38,6 +38,10 @@ once() {
     "$PY" -u scripts/update_noisy100k_results_md.py || log "WARN results md update failed rc=$?"
     log "plot_noisy100k_learning_curves.py"
     "$PY" -u scripts/plot_noisy100k_learning_curves.py || log "WARN learning curves plot failed rc=$?"
+    log "update_noisy10k_results_md.py"
+    "$PY" -u scripts/update_noisy10k_results_md.py || log "WARN 10k results md update failed rc=$?"
+    log "plot_noisy10k_learning_curves.py"
+    "$PY" -u scripts/plot_noisy10k_learning_curves.py || log "WARN 10k learning curves plot failed rc=$?"
   fi
   if [[ "$PUSH" == "1" ]]; then
     # Mirror results into PB_logs so they ride the existing logs push even
@@ -47,6 +51,8 @@ once() {
       for f in \
         PB_toy_results_20260723_noisy100k_eval100k_200k_csh.md \
         PB_toy_learning_curves_noisy100k_csh.png \
+        PB_toy_results_noisy10k_eval100k_200k_csh.md \
+        PB_toy_learning_curves_noisy10k_csh.png \
         PB_toy_nt_sweep_noisy100k_200k.md \
         PB_toy_nt_sweep_noisy100k_200k.json
       do
